@@ -1,10 +1,12 @@
 import "dotenv/config";
+import { mkdirSync } from "fs";
 import { serve } from "@hono/node-server";
 import { createServer } from "./server.js";
 import { SessionManager } from "./sessions.js";
 import { DockerManager } from "./docker.js";
 import { WsBridge } from "./ws-bridge.js";
 import { TokenPool } from "./token-pool.js";
+import { openDb } from "./db.js";
 
 // --- Config ---
 
@@ -13,12 +15,14 @@ const WS_PORT = parseInt(process.env.WS_PORT || "8081", 10);
 const RUNNER_IMAGE = process.env.RUNNER_IMAGE || "claude-runner:latest";
 const NETWORK = process.env.DOCKER_NETWORK || "claude-net";
 const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || "300000", 10);
-// When orchestrator runs on host (not in Docker), runners need host.docker.internal to reach back
 const ORCHESTRATOR_HOST = process.env.ORCHESTRATOR_HOST || "host.docker.internal";
 const ORCHESTRATOR_WS_URL = `ws://${ORCHESTRATOR_HOST}:${WS_PORT}`;
+const DB_PATH = process.env.DB_PATH || "/app/data/orchestrator.db";
+const SESSIONS_VOLUME = process.env.SESSIONS_VOLUME || "claude-sessions";
+// Where the sessions volume is mounted on the orchestrator (read-only, for transcript API)
+const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
 
 // --- Token pool ---
-// Supports multiple OAuth tokens (comma-separated). Each session gets pinned to one token.
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 if (!oauthTokens) {
   console.error("CLAUDE_CODE_OAUTH_TOKEN is required");
@@ -31,11 +35,20 @@ const runnerEnv: Record<string, string> = {};
 if (process.env.GIT_TOKEN) runnerEnv.GIT_TOKEN = process.env.GIT_TOKEN;
 if (process.env.GITHUB_TOKEN) runnerEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
+// --- Database ---
+
+// Ensure the data directory exists
+mkdirSync(DB_PATH.replace(/\/[^/]+$/, ""), { recursive: true });
+const db = openDb(DB_PATH);
+
 // --- Initialize ---
 
-const sessions = new SessionManager();
+const sessions = new SessionManager(db);
 const docker = new DockerManager();
 const bridge = new WsBridge(sessions, WS_PORT);
+
+// Restore token pool state from persisted sessions
+tokenPool.restore(sessions.activeTokenIndices(), sessions.maxTokenIndex());
 
 // Ensure Docker network exists
 await docker.ensureNetwork(NETWORK);
@@ -48,6 +61,8 @@ const app = createServer({
   env: runnerEnv,
   runnerImage: RUNNER_IMAGE,
   network: NETWORK,
+  sessionsVolume: SESSIONS_VOLUME,
+  sessionsPath: SESSIONS_PATH,
   wsPort: WS_PORT,
   orchestratorWsUrl: ORCHESTRATOR_WS_URL,
   startedAt: new Date(),
@@ -77,6 +92,7 @@ async function shutdown() {
   console.log("Shutting down...");
   bridge.close();
   await docker.cleanup();
+  db.close();
   process.exit(0);
 }
 
@@ -93,4 +109,6 @@ serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`Runner WS URL: ${ORCHESTRATOR_WS_URL}`);
   console.log(`Idle timeout: ${IDLE_TIMEOUT_MS / 1000}s`);
   console.log(`OAuth token pool: ${tokenPool.size} token(s)`);
+  console.log(`Database: ${DB_PATH}`);
+  console.log(`Sessions volume: ${SESSIONS_VOLUME}`);
 });

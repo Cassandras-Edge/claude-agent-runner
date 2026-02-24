@@ -12,12 +12,19 @@ export interface SpawnConfig {
   orchestratorUrl: string;
   env: Record<string, string>;
   network: string;
+  sessionsVolume?: string;
   repo?: string;
   branch?: string;
   workspace?: string;
   model?: string;
   systemPrompt?: string;
+  appendSystemPrompt?: string;
   maxTurns?: number;
+  thinking?: boolean;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  additionalDirectories?: string[];
+  compactInstructions?: string;
 }
 
 export class DockerManager {
@@ -57,14 +64,35 @@ export class DockerManager {
     if (config.model) envVars.push(`RUNNER_MODEL=${config.model}`);
     if (config.systemPrompt) envVars.push(`RUNNER_SYSTEM_PROMPT=${config.systemPrompt}`);
     if (config.maxTurns) envVars.push(`RUNNER_MAX_TURNS=${config.maxTurns}`);
+    if (config.appendSystemPrompt) envVars.push(`RUNNER_APPEND_SYSTEM_PROMPT=${config.appendSystemPrompt}`);
+    if (config.thinking) envVars.push(`RUNNER_THINKING=true`);
+    if (config.allowedTools?.length) {
+      envVars.push(`RUNNER_ALLOWED_TOOLS=${JSON.stringify(config.allowedTools)}`);
+    }
+    if (config.disallowedTools?.length) {
+      envVars.push(`RUNNER_DISALLOWED_TOOLS=${JSON.stringify(config.disallowedTools)}`);
+    }
+    if (config.additionalDirectories?.length) {
+      envVars.push(`RUNNER_ADDITIONAL_DIRECTORIES=${JSON.stringify(config.additionalDirectories)}`);
+    }
+    if (config.compactInstructions) envVars.push(`RUNNER_COMPACT_INSTRUCTIONS=${config.compactInstructions}`);
 
     // Git token from env
     const gitToken = forwardedEnv.GIT_TOKEN || forwardedEnv.GITHUB_TOKEN;
     if (gitToken) envVars.push(`RUNNER_GIT_TOKEN=${gitToken}`);
 
     const binds: string[] = [];
+    // Mount shared sessions volume so JSONL transcripts persist across container restarts
+    if (config.sessionsVolume) {
+      binds.push(`${config.sessionsVolume}:/home/runner/.claude`);
+    }
     if (config.workspace) {
       binds.push(`${config.workspace}:/workspace`);
+    }
+    if (config.additionalDirectories) {
+      for (const dir of config.additionalDirectories) {
+        binds.push(`${dir}:${dir}:ro`);
+      }
     }
 
     const container = await this.docker.createContainer({

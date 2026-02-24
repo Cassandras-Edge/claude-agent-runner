@@ -1,6 +1,9 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { randomUUID } from "crypto";
+import { readFile } from "fs/promises";
+import { existsSync } from "fs";
+import { join } from "path";
 import type { SessionManager } from "./sessions.js";
 import type { DockerManager } from "./docker.js";
 import type { WsBridge } from "./ws-bridge.js";
@@ -21,6 +24,8 @@ interface AppContext {
   env: Record<string, string>;
   runnerImage: string;
   network: string;
+  sessionsVolume: string;
+  sessionsPath: string; // host-side mount path for reading transcripts
   wsPort: number;
   orchestratorWsUrl: string;
   startedAt: Date;
@@ -91,6 +96,35 @@ export function createServer(ctx: AppContext): Hono {
     });
   });
 
+  // --- Sessions: Transcript ---
+
+  app.get("/sessions/:id/transcript", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) {
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    // Claude SDK stores transcripts at: <claude-dir>/projects/-workspace/<session-id>.jsonl
+    const transcriptPath = join(ctx.sessionsPath, "projects", "-workspace", `${session.id}.jsonl`);
+
+    if (!existsSync(transcriptPath)) {
+      return c.json({ code: "session_not_found", message: "Transcript not yet available" } satisfies ErrorResponse, 404 as any);
+    }
+
+    const raw = await readFile(transcriptPath, "utf-8");
+    const format = c.req.query("format");
+
+    if (format === "json") {
+      const lines = raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+      return c.json({ session_id: session.id, events: lines });
+    }
+
+    // Return raw JSONL
+    return new Response(raw, {
+      headers: { "Content-Type": "application/x-ndjson", "X-Session-Id": session.id },
+    });
+  });
+
   // --- Sessions: Delete ---
 
   app.delete("/sessions/:id", async (c) => {
@@ -125,9 +159,15 @@ export function createServer(ctx: AppContext): Hono {
     try {
       await spawnSession(ctx, sessionId, body);
       await waitForReady(ctx, sessionId);
+
+      // If no message, just return the ready session
+      if (!body.message) {
+        return c.json({ session_id: sessionId, status: "ready" });
+      }
+
       ctx.sessions.incrementMessages(sessionId);
 
-      const result = await sendAndCollect(ctx, sessionId, body.message, {
+      const result = await sendAndCollect(ctx, sessionId, body.message!, {
         model: body.model,
         maxTurns: body.maxTurns,
       });
@@ -163,10 +203,13 @@ export function createServer(ctx: AppContext): Hono {
           await stream.writeSSE({ event: "session", data: JSON.stringify({ session_id: sessionId, status }) });
         });
 
+        // If no message, just signal ready and close
+        if (!body.message) return;
+
         ctx.sessions.incrementMessages(sessionId);
 
         // Send message and stream events
-        await sendAndStream(ctx, sessionId, body.message, { model: body.model, maxTurns: body.maxTurns }, async (event) => {
+        await sendAndStream(ctx, sessionId, body.message!, { model: body.model, maxTurns: body.maxTurns }, async (event) => {
           const eventType = mapEventType(event.type);
           await stream.writeSSE({ event: eventType, data: JSON.stringify(event) });
         });
@@ -262,10 +305,6 @@ async function parseSessionRequest(c: any): Promise<SessionRequest | { error: Er
     return { error: { code: "invalid_request", message: "Invalid JSON body" }, status: 400 };
   }
 
-  if (!body.message) {
-    return { error: { code: "invalid_request", message: "Missing required field: message" }, status: 400 };
-  }
-
   if (!body.repo && !body.workspace) {
     return { error: { code: "invalid_request", message: "Must provide either repo or workspace" }, status: 400 };
   }
@@ -278,7 +317,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
   const maxTurns = body.maxTurns;
 
   // Assign an OAuth token from the pool for this session
-  const token = ctx.tokenPool.assign(sessionId);
+  const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
   const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
 
   const containerId = await ctx.docker.spawn({
@@ -287,17 +326,22 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
     orchestratorUrl: ctx.orchestratorWsUrl,
     env: sessionEnv,
     network: ctx.network,
+    sessionsVolume: ctx.sessionsVolume,
     repo: body.repo,
     branch: body.branch,
     workspace: body.workspace,
     model,
     systemPrompt: body.systemPrompt,
+    appendSystemPrompt: body.appendSystemPrompt,
     maxTurns,
+    thinking: body.thinking,
+    allowedTools: body.allowedTools,
+    disallowedTools: body.disallowedTools,
     additionalDirectories: body.additionalDirectories,
     compactInstructions: body.compactInstructions,
   });
 
-  const session = ctx.sessions.create(sessionId, containerId, {
+  const session = ctx.sessions.create(sessionId, containerId, tokenIndex, {
     repo: body.repo,
     branch: body.branch,
     workspace: body.workspace,
