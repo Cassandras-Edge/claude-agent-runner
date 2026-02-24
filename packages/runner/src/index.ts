@@ -3,6 +3,8 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
+import { serializeEvent } from "./serialize.js";
+import { createStderrRingBuffer, buildZeroEventError } from "./helpers.js";
 
 // --- Config from env ---
 
@@ -13,7 +15,22 @@ const BRANCH = process.env.RUNNER_BRANCH || "main";
 const GIT_TOKEN = process.env.RUNNER_GIT_TOKEN;
 const MODEL = process.env.RUNNER_MODEL || "sonnet";
 const SYSTEM_PROMPT = process.env.RUNNER_SYSTEM_PROMPT;
-const MAX_TURNS = parseInt(process.env.RUNNER_MAX_TURNS || "25", 10);
+const APPEND_SYSTEM_PROMPT = process.env.RUNNER_APPEND_SYSTEM_PROMPT;
+const MAX_TURNS = process.env.RUNNER_MAX_TURNS ? parseInt(process.env.RUNNER_MAX_TURNS, 10) : undefined;
+const THINKING = process.env.RUNNER_THINKING === "true";
+const ALLOWED_TOOLS: string[] = process.env.RUNNER_ALLOWED_TOOLS
+  ? JSON.parse(process.env.RUNNER_ALLOWED_TOOLS)
+  : [];
+const DISALLOWED_TOOLS: string[] = process.env.RUNNER_DISALLOWED_TOOLS
+  ? JSON.parse(process.env.RUNNER_DISALLOWED_TOOLS)
+  : [];
+const ADDITIONAL_DIRECTORIES: string[] = process.env.RUNNER_ADDITIONAL_DIRECTORIES
+  ? JSON.parse(process.env.RUNNER_ADDITIONAL_DIRECTORIES)
+  : [];
+const COMPACT_INSTRUCTIONS = process.env.RUNNER_COMPACT_INSTRUCTIONS;
+const FORK_FROM = process.env.RUNNER_FORK_FROM;
+const FORK_AT = process.env.RUNNER_FORK_AT;
+const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
 const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_MS || "90000", 10);
 const WORKSPACE = "/workspace";
 
@@ -62,67 +79,48 @@ function buildClaudeChildEnv(): Record<string, string> {
   };
 }
 
-function createStderrRingBuffer(maxLines: number) {
-  const lines: string[] = [];
-  return {
-    push(chunk: string): void {
-      for (const line of chunk.split(/\r?\n/)) {
-        if (!line) continue;
-        lines.push(line);
-        if (lines.length > maxLines) lines.shift();
-      }
-    },
-    tail(limit = maxLines): string[] {
-      return lines.slice(-Math.max(1, Math.min(limit, maxLines)));
-    },
-  };
-}
-
-function buildZeroEventError(
-  reason: string,
-  model: string,
-  maxTurns: number,
-  childEnv: Record<string, string>,
-  stderrTail: string[],
-): string {
-  return JSON.stringify(
-    {
-      code: "claude_cli_no_events",
-      reason,
-      model,
-      maxTurns,
-      cwd: WORKSPACE,
-      childEnvKeys: Object.keys(childEnv).sort(),
-      stderrTail,
-    },
-    null,
-    2,
-  );
-}
-
 // --- Agent runner ---
 
 let sessionId: string | undefined;
 
 async function runAgent(ws: WebSocket, message: string, overrides?: { model?: string; maxTurns?: number }): Promise<void> {
   const model = overrides?.model || MODEL;
-  const maxTurns = overrides?.maxTurns || MAX_TURNS;
+  const maxTurns = overrides?.maxTurns ?? MAX_TURNS;
   const childEnv = buildClaudeChildEnv();
   const stderrRing = createStderrRingBuffer(200);
+
+  const hooks: Record<string, any[]> = {};
+  if (COMPACT_INSTRUCTIONS) {
+    hooks.PreCompact = [{
+      hooks: [async () => ({
+        continue: true,
+        systemMessage: COMPACT_INSTRUCTIONS,
+      })],
+    }];
+  }
 
   const response = query({
     prompt: message,
     options: {
       model,
-      systemPrompt: SYSTEM_PROMPT,
+      ...(SYSTEM_PROMPT ? { systemPrompt: SYSTEM_PROMPT } : {}),
+      ...(APPEND_SYSTEM_PROMPT ? { appendSystemPrompt: APPEND_SYSTEM_PROMPT } : {}),
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
-      maxTurns,
+      ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(THINKING ? { maxThinkingTokens: 10000 } : {}),
+      ...(ALLOWED_TOOLS.length > 0 ? { tools: ALLOWED_TOOLS } : {}),
+      ...(DISALLOWED_TOOLS.length > 0 ? { disallowedTools: DISALLOWED_TOOLS } : {}),
       cwd: WORKSPACE,
       includePartialMessages: true,
       persistSession: true,
-      ...(sessionId ? { resume: sessionId } : {}),
-      settingSources: [],
+      enableFileCheckpointing: true,
+      ...((sessionId || FORK_FROM) ? { resume: sessionId || FORK_FROM } : {}),
+      ...(FORK_SESSION && !sessionId ? { forkSession: true } : {}),
+      ...(FORK_AT && !sessionId ? { resumeSessionAt: FORK_AT } : {}),
+      settingSources: ["project"],
+      ...(ADDITIONAL_DIRECTORIES.length > 0 ? { additionalDirectories: ADDITIONAL_DIRECTORIES } : {}),
+      ...(Object.keys(hooks).length > 0 ? { hooks } : {}),
       env: childEnv,
       stderr: (data: string) => {
         stderrRing.push(data);
@@ -150,9 +148,12 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
 
         eventCount++;
 
-        // Capture session ID from first message
+        // Capture session ID from first message and report back to orchestrator
         if (!sessionId && "session_id" in event && event.session_id) {
           sessionId = event.session_id;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "session_init", session_id: SESSION_ID, sdk_session_id: sessionId }));
+          }
         }
 
         // Forward event to orchestrator
@@ -176,7 +177,8 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
           "Timed out waiting for first SDK event",
           model,
           maxTurns,
-          childEnv,
+          WORKSPACE,
+          Object.keys(childEnv).sort(),
           stderrRing.tail(80),
         ));
       }
@@ -193,7 +195,8 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
         reason,
         model,
         maxTurns,
-        childEnv,
+        WORKSPACE,
+        Object.keys(childEnv).sort(),
         stderrRing.tail(80),
       ));
     }
@@ -202,63 +205,6 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
   } finally {
     clearTimeout(firstEventTimer);
     response.close();
-  }
-}
-
-function serializeEvent(event: any): any {
-  switch (event.type) {
-    case "assistant": {
-      const content = event.message?.content
-        ?.filter((b: any) => b.type === "text")
-        .map((b: any) => b.text)
-        .join("") || "";
-      return { type: "assistant", content, uuid: event.uuid };
-    }
-    case "stream_event": {
-      const e = event.event;
-      if (e?.type === "content_block_delta" && e.delta?.type === "text_delta") {
-        return { type: "assistant_delta", content: e.delta.text };
-      }
-      if (e?.type === "content_block_delta" && e.delta?.type === "thinking_delta") {
-        return { type: "thinking", content: e.delta.thinking };
-      }
-      return null; // skip other stream events
-    }
-    case "user": {
-      // Tool results
-      if (event.tool_use_result) {
-        return {
-          type: "tool_result",
-          tool_use_id: event.tool_use_result.tool_use_id,
-          output: event.tool_use_result.output,
-        };
-      }
-      return null;
-    }
-    case "tool_progress": {
-      return {
-        type: "tool_progress",
-        tool_name: event.tool_name,
-        tool_use_id: event.tool_use_id,
-        elapsed_time_seconds: event.elapsed_time_seconds,
-      };
-    }
-    case "result": {
-      return {
-        type: "result",
-        subtype: event.subtype,
-        result: event.result || "",
-        usage: {
-          input_tokens: event.usage?.input_tokens || 0,
-          output_tokens: event.usage?.output_tokens || 0,
-          cost_usd: event.total_cost_usd || 0,
-          duration_ms: event.duration_ms || 0,
-        },
-        ...(event.subtype !== "success" ? { errors: event.errors || [] } : {}),
-      };
-    }
-    default:
-      return null;
   }
 }
 
