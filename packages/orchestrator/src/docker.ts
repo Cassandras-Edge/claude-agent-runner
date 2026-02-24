@@ -25,6 +25,9 @@ export interface SpawnConfig {
   disallowedTools?: string[];
   additionalDirectories?: string[];
   compactInstructions?: string;
+  forkFrom?: string;
+  forkAt?: string;
+  forkSession?: boolean;
 }
 
 export class DockerManager {
@@ -76,6 +79,9 @@ export class DockerManager {
       envVars.push(`RUNNER_ADDITIONAL_DIRECTORIES=${JSON.stringify(config.additionalDirectories)}`);
     }
     if (config.compactInstructions) envVars.push(`RUNNER_COMPACT_INSTRUCTIONS=${config.compactInstructions}`);
+    if (config.forkFrom) envVars.push(`RUNNER_FORK_FROM=${config.forkFrom}`);
+    if (config.forkAt) envVars.push(`RUNNER_FORK_AT=${config.forkAt}`);
+    if (config.forkSession) envVars.push(`RUNNER_FORK_SESSION=true`);
 
     // Git token from env
     const gitToken = forwardedEnv.GIT_TOKEN || forwardedEnv.GITHUB_TOKEN;

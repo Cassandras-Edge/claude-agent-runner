@@ -21,22 +21,26 @@ export class SessionManager {
   }
 
   create(id: string, containerId: string, oauthTokenIndex: number, config: {
+    name?: string;
     repo?: string;
     branch?: string;
     workspace?: string;
     model: string;
     systemPrompt?: string;
     maxTurns?: number;
+    forkedFrom?: string;
   }): Session {
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO sessions (id, container_id, status, oauth_token_index, repo, branch, workspace, model, system_prompt, max_turns, created_at, last_activity)
-      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, repo, branch, workspace, model, system_prompt, max_turns, forked_from, created_at, last_activity)
+      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, containerId, oauthTokenIndex,
+      config.name ?? null,
       config.repo ?? null, config.branch ?? null, config.workspace ?? null,
       config.model, config.systemPrompt ?? null, config.maxTurns ?? null,
+      config.forkedFrom ?? null,
       now, now,
     );
 
@@ -77,6 +81,11 @@ export class SessionManager {
   setError(id: string, error: string): void {
     this.db.prepare("UPDATE sessions SET status = 'error', last_error = ?, last_activity = ? WHERE id = ?")
       .run(error, new Date().toISOString(), id);
+  }
+
+  setSdkSessionId(id: string, sdkSessionId: string): void {
+    this.db.prepare("UPDATE sessions SET sdk_session_id = ?, last_activity = ? WHERE id = ?")
+      .run(sdkSessionId, new Date().toISOString(), id);
   }
 
   incrementMessages(id: string): void {
@@ -124,6 +133,23 @@ export class SessionManager {
   maxTokenIndex(): number | undefined {
     const row = this.db.prepare("SELECT MAX(oauth_token_index) as max_idx FROM sessions").get() as { max_idx: number | null };
     return row.max_idx ?? undefined;
+  }
+
+  /** Rename a session. Returns false if the name is already taken by another session. */
+  rename(id: string, name: string): boolean {
+    const existing = this.db.prepare(
+      "SELECT id FROM sessions WHERE name = ? AND id != ?"
+    ).get(name, id) as { id: string } | undefined;
+    if (existing) return false;
+
+    this.db.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(name, id);
+    return true;
+  }
+
+  /** Check if a session name is already in use. */
+  nameExists(name: string): boolean {
+    const row = this.db.prepare("SELECT id FROM sessions WHERE name = ?").get(name) as { id: string } | undefined;
+    return !!row;
   }
 
   // --- Runtime-only state management ---

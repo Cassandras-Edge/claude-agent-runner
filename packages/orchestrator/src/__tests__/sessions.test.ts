@@ -238,6 +238,52 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("name", () => {
+    it("creates a session with a name", () => {
+      const session = manager.create("s1", "c1", 0, {
+        model: "sonnet",
+        name: "my-agent",
+      });
+      expect(session.name).toBe("my-agent");
+    });
+
+    it("creates a session without a name", () => {
+      const session = manager.create("s1", "c1", 0, { model: "sonnet" });
+      expect(session.name).toBeUndefined();
+    });
+
+    it("renames a session", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet" });
+      const ok = manager.rename("s1", "new-name");
+      expect(ok).toBe(true);
+      expect(manager.get("s1")!.name).toBe("new-name");
+    });
+
+    it("rejects duplicate names", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet", name: "taken" });
+      manager.create("s2", "c2", 1, { model: "sonnet" });
+
+      const ok = manager.rename("s2", "taken");
+      expect(ok).toBe(false);
+      expect(manager.get("s2")!.name).toBeUndefined();
+    });
+
+    it("allows renaming to the same name (no-op dedup)", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet", name: "same" });
+      const ok = manager.rename("s1", "same");
+      expect(ok).toBe(true);
+    });
+
+    it("nameExists returns true for existing names", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet", name: "exists" });
+      expect(manager.nameExists("exists")).toBe(true);
+    });
+
+    it("nameExists returns false for unused names", () => {
+      expect(manager.nameExists("nope")).toBe(false);
+    });
+  });
+
   describe("runtime state (ws, pendingResolve)", () => {
     it("sets and gets WebSocket references", () => {
       manager.create("s1", "c1", 0, { model: "sonnet" });

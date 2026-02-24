@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
-  last_error TEXT
+  last_error TEXT,
+  sdk_session_id TEXT,
+  forked_from TEXT,
+  name TEXT
 );
 `;
 
@@ -41,6 +44,24 @@ export interface SessionRow {
   output_tokens: number;
   cost_usd: number;
   last_error: string | null;
+  sdk_session_id: string | null;
+  forked_from: string | null;
+  name: string | null;
+}
+
+// Idempotent migrations for columns added after initial schema
+const MIGRATIONS = [
+  "ALTER TABLE sessions ADD COLUMN name TEXT",
+];
+
+function runMigrations(db: Database.Database): void {
+  for (const sql of MIGRATIONS) {
+    try {
+      db.exec(sql);
+    } catch {
+      // Column already exists — safe to ignore
+    }
+  }
 }
 
 export function openDb(path: string): Database.Database {
@@ -48,6 +69,7 @@ export function openDb(path: string): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  runMigrations(db);
   return db;
 }
 
@@ -72,5 +94,8 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
       cost_usd: row.cost_usd,
     },
     lastError: row.last_error ?? undefined,
+    sdkSessionId: row.sdk_session_id ?? undefined,
+    forkedFrom: row.forked_from ?? undefined,
+    name: row.name ?? undefined,
   };
 }

@@ -10,6 +10,7 @@ import type { WsBridge } from "./ws-bridge.js";
 import type {
   SessionRequest,
   MessageRequest,
+  ForkRequest,
   ErrorResponse,
   RunnerEvent,
   Usage,
@@ -56,6 +57,7 @@ export function createServer(ctx: AppContext): Hono {
   app.get("/sessions", (c) => {
     const sessions = ctx.sessions.list().map((s) => ({
       session_id: s.id,
+      name: s.name,
       status: s.status,
       source: {
         type: s.repo ? "repo" as const : "workspace" as const,
@@ -80,6 +82,7 @@ export function createServer(ctx: AppContext): Hono {
 
     return c.json({
       session_id: session.id,
+      name: session.name,
       status: session.status,
       source: {
         type: session.repo ? "repo" : "workspace",
@@ -93,6 +96,8 @@ export function createServer(ctx: AppContext): Hono {
       total_usage: session.totalUsage,
       error: session.lastError,
       container_id: session.containerId,
+      sdk_session_id: session.sdkSessionId,
+      forked_from: session.forkedFrom,
     });
   });
 
@@ -125,6 +130,34 @@ export function createServer(ctx: AppContext): Hono {
     });
   });
 
+  // --- Sessions: Rename ---
+
+  app.patch("/sessions/:id", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) {
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    let body: { name?: string };
+    try {
+      body = (await c.req.json()) as { name?: string };
+    } catch {
+      return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
+    }
+
+    if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
+      return c.json({ code: "invalid_request", message: "Missing or empty required field: name" } satisfies ErrorResponse, 400 as any);
+    }
+
+    const name = body.name.trim();
+    const ok = ctx.sessions.rename(session.id, name);
+    if (!ok) {
+      return c.json({ code: "invalid_request", message: `Session name "${name}" is already in use` } satisfies ErrorResponse, 409 as any);
+    }
+
+    return c.json({ session_id: session.id, name });
+  });
+
   // --- Sessions: Delete ---
 
   app.delete("/sessions/:id", async (c) => {
@@ -148,10 +181,91 @@ export function createServer(ctx: AppContext): Hono {
     return c.json(result);
   });
 
+  // --- Sessions: Fork ---
+
+  app.post("/sessions/:id/fork", async (c) => {
+    const parent = ctx.sessions.get(c.req.param("id"));
+    if (!parent) {
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    if (!parent.sdkSessionId) {
+      return c.json({ code: "invalid_request", message: "Cannot fork: parent session has no SDK session ID (has it processed a message yet?)" } satisfies ErrorResponse, 400 as any);
+    }
+
+    let body: ForkRequest;
+    try {
+      body = (await c.req.json()) as ForkRequest;
+    } catch {
+      body = {};
+    }
+
+    const sessionId = randomUUID();
+    const model = body.model || parent.model;
+
+    try {
+      // Assign an OAuth token from the pool
+      const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
+      const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
+
+      const containerId = await ctx.docker.spawn({
+        sessionId,
+        image: ctx.runnerImage,
+        orchestratorUrl: ctx.orchestratorWsUrl,
+        env: sessionEnv,
+        network: ctx.network,
+        sessionsVolume: ctx.sessionsVolume,
+        repo: parent.repo,
+        branch: parent.branch,
+        workspace: parent.workspace,
+        model,
+        systemPrompt: body.systemPrompt || parent.systemPrompt,
+        appendSystemPrompt: body.appendSystemPrompt,
+        maxTurns: body.maxTurns ?? parent.maxTurns,
+        forkFrom: parent.sdkSessionId,
+        forkAt: body.resumeAt,
+        forkSession: true,
+      });
+
+      ctx.sessions.create(sessionId, containerId, tokenIndex, {
+        repo: parent.repo,
+        branch: parent.branch,
+        workspace: parent.workspace,
+        model,
+        systemPrompt: body.systemPrompt || parent.systemPrompt,
+        maxTurns: body.maxTurns ?? parent.maxTurns,
+        forkedFrom: parent.id,
+      });
+
+      await waitForReady(ctx, sessionId);
+
+      // If a message was provided, send it immediately
+      if (body.message) {
+        ctx.sessions.incrementMessages(sessionId);
+        const result = await sendAndCollect(ctx, sessionId, body.message, {
+          model,
+          maxTurns: body.maxTurns,
+        });
+        return c.json({
+          session_id: sessionId,
+          forked_from: parent.id,
+          result: result.text,
+          usage: result.usage,
+        });
+      }
+
+      return c.json({ session_id: sessionId, status: "ready", forked_from: parent.id });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = categorizeError(message) as any;
+      return c.json({ code, message, session_id: sessionId }, 500 as any);
+    }
+  });
+
   // --- Sessions: Create + Run (blocking) ---
 
   app.post("/sessions", async (c) => {
-    const body = await parseSessionRequest(c);
+    const body = await parseSessionRequest(c, ctx.sessions);
     if ("error" in body) return c.json(body.error, body.status);
 
     const sessionId = randomUUID();
@@ -187,7 +301,7 @@ export function createServer(ctx: AppContext): Hono {
   // --- Sessions: Create + Run (SSE) ---
 
   app.post("/sessions/stream", async (c) => {
-    const body = await parseSessionRequest(c);
+    const body = await parseSessionRequest(c, ctx.sessions);
     if ("error" in body) return c.json(body.error, body.status);
 
     const sessionId = randomUUID();
@@ -297,7 +411,7 @@ export function createServer(ctx: AppContext): Hono {
 
 // --- Helpers ---
 
-async function parseSessionRequest(c: any): Promise<SessionRequest | { error: ErrorResponse; status: any }> {
+async function parseSessionRequest(c: any, sessions?: SessionManager): Promise<SessionRequest | { error: ErrorResponse; status: any }> {
   let body: SessionRequest;
   try {
     body = (await c.req.json()) as SessionRequest;
@@ -307,6 +421,10 @@ async function parseSessionRequest(c: any): Promise<SessionRequest | { error: Er
 
   if (!body.repo && !body.workspace) {
     return { error: { code: "invalid_request", message: "Must provide either repo or workspace" }, status: 400 };
+  }
+
+  if (body.name && sessions?.nameExists(body.name.trim())) {
+    return { error: { code: "invalid_request", message: `Session name "${body.name.trim()}" is already in use` }, status: 409 };
   }
 
   return body;
@@ -342,6 +460,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
   });
 
   const session = ctx.sessions.create(sessionId, containerId, tokenIndex, {
+    name: body.name?.trim(),
     repo: body.repo,
     branch: body.branch,
     workspace: body.workspace,

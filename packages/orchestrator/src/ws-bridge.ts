@@ -44,6 +44,13 @@ export class WsBridge extends EventEmitter {
             this.emit(`status:${sessionId}`, msg.status);
             break;
 
+          case "session_init":
+            if (msg.sdk_session_id) {
+              this.sessions.setSdkSessionId(sessionId, msg.sdk_session_id);
+              this.emit(`session_init:${sessionId}`, msg.sdk_session_id);
+            }
+            break;
+
           case "event":
             this.emit(`event:${sessionId}`, msg.event);
             break;

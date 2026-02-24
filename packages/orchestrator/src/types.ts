@@ -3,13 +3,20 @@ import type WebSocket from "ws";
 // --- API Request/Response Types ---
 
 export interface SessionRequest {
+  name?: string;
   repo?: string;
   branch?: string;
   workspace?: string;
-  message: string;
+  message?: string;
   model?: "haiku" | "sonnet" | "opus";
   systemPrompt?: string;
+  appendSystemPrompt?: string;
   maxTurns?: number;
+  thinking?: boolean;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  additionalDirectories?: string[];
+  compactInstructions?: string;
 }
 
 export interface MessageRequest {
@@ -57,6 +64,7 @@ export type SessionStatus = "starting" | "cloning" | "ready" | "busy" | "idle" |
 
 export interface SessionInfo {
   session_id: string;
+  name?: string;
   status: SessionStatus;
   source: {
     type: "repo" | "workspace";
@@ -87,7 +95,7 @@ export interface Session {
   workspace?: string;
   model: string;
   systemPrompt?: string;
-  maxTurns: number;
+  maxTurns?: number;
   createdAt: Date;
   lastActivity: Date;
   messageCount: number;
@@ -97,8 +105,20 @@ export interface Session {
     cost_usd: number;
   };
   lastError?: string;
+  sdkSessionId?: string;
+  forkedFrom?: string;
+  name?: string;
   ws?: WebSocket;
   pendingResolve?: (event: RunnerEvent) => void;
+}
+
+export interface ForkRequest {
+  resumeAt?: string;
+  message?: string;
+  model?: string;
+  systemPrompt?: string;
+  appendSystemPrompt?: string;
+  maxTurns?: number;
 }
 
 // --- Runner WS Protocol ---
@@ -122,7 +142,13 @@ export interface RunnerErrorMessage {
   message: string;
 }
 
-export type RunnerMessage = RunnerStatusMessage | RunnerEventMessage | RunnerErrorMessage;
+export interface RunnerSessionInitMessage {
+  type: "session_init";
+  session_id: string;
+  sdk_session_id: string;
+}
+
+export type RunnerMessage = RunnerStatusMessage | RunnerEventMessage | RunnerErrorMessage | RunnerSessionInitMessage;
 
 export interface RunnerEvent {
   type: string;
