@@ -1,0 +1,21 @@
+services:
+  orchestrator:
+    build: ./packages/orchestrator
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - .env
+    environment:
+      - RUNNER_IMAGE=claude-runner:latest
+      - DOCKER_NETWORK=claude-net
+      - IDLE_TIMEOUT_MS=300000
+    networks:
+      - claude-net
+    restart: unless-stopped
+
+networks:
+  claude-net:
+    driver: bridge

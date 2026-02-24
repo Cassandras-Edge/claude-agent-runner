@@ -1,0 +1,10 @@
+{
+  "name": "claude-agent-runner",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Docker-isolated Claude Code agent runtime and orchestrator",
+  "workspaces": [
+    "packages/runner",
+    "packages/orchestrator"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@claude-agent-runner/orchestrator",
+  "version": "1.0.0",
+  "description": "Agent orchestrator — manages Docker-isolated Claude Code sessions via REST API",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.1",
+    "dockerode": "^4.0.7",
+    "dotenv": "^16.5.0",
+    "hono": "^4.7.6",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.38",
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
