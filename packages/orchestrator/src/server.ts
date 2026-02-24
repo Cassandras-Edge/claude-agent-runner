@@ -17,7 +17,7 @@ import type {
   Usage,
 } from "./types.js";
 import type { TokenPool } from "./token-pool.js";
-import { logger } from "./logger.js";
+import { getLogContext, logger, runWithLogContext } from "./logger.js";
 
 interface AppContext {
   sessions: SessionManager;
@@ -38,6 +38,17 @@ interface AppContext {
 
 export function createServer(ctx: AppContext): Hono {
   const app = new Hono();
+
+  app.use("*", async (c, next) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
+    const traceId = c.req.header("x-trace-id") || requestId;
+    c.header("x-request-id", requestId);
+    c.header("x-trace-id", traceId);
+
+    return runWithLogContext({ requestId, traceId }, async () => {
+      await next();
+    });
+  });
 
   // --- Health ---
 
@@ -221,6 +232,7 @@ export function createServer(ctx: AppContext): Hono {
   // --- Sessions: Fork ---
 
   app.post("/sessions/:id/fork", async (c) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
     const parent = ctx.sessions.get(c.req.param("id"));
     if (!parent) {
       logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id"), context: "fork" });
@@ -251,6 +263,7 @@ export function createServer(ctx: AppContext): Hono {
       logger.info("orchestrator.api", "fork_session_request", {
         parent_session_id: parent.id,
         include_system_prompt: Boolean(body.systemPrompt || parent.systemPrompt),
+        request_id: requestId,
       });
       await ensureCapacity(ctx);
 
@@ -291,12 +304,13 @@ export function createServer(ctx: AppContext): Hono {
       logger.info("orchestrator.api", "fork_session_created", {
         session_id: sessionId,
         parent_session_id: parent.id,
-        forked_from: session.forkedFrom,
+        forked_from: parent.id,
+        request_id: requestId,
       });
 
-      await waitForReady(ctx, sessionId);
+      await waitForReady(ctx, sessionId, undefined, requestId);
       startupComplete = true;
-      logger.info("orchestrator.api", "fork_session_ready", { session_id: sessionId });
+      logger.info("orchestrator.api", "fork_session_ready", { session_id: sessionId, request_id: requestId });
 
       // If a message was provided, send it immediately
       if (body.message) {
@@ -309,6 +323,7 @@ export function createServer(ctx: AppContext): Hono {
         const result = await sendAndCollect(ctx, sessionId, body.message, {
           model,
           maxTurns: body.maxTurns,
+          requestId,
         });
         return c.json({
           session_id: sessionId,
@@ -321,15 +336,15 @@ export function createServer(ctx: AppContext): Hono {
       return c.json({ session_id: sessionId, status: "ready", forked_from: parent.id });
     } catch (err) {
       if (isApiError(err)) {
-        logger.warn("orchestrator.api", "fork_session_api_error", { session_id: sessionId, code: err.code });
+        logger.warn("orchestrator.api", "fork_session_api_error", { session_id: sessionId, code: err.code, request_id: requestId });
         return c.json({ code: err.code, message: err.message, session_id: sessionId }, err.status as any);
       }
       if (!startupComplete) {
-        await rollbackSession(ctx, sessionId);
+        await rollbackSession(ctx, sessionId, requestId);
       }
       const message = err instanceof Error ? err.message : String(err);
       const code = categorizeError(message) as any;
-      logger.error("orchestrator.api", "fork_session_error", { session_id: sessionId, code, message });
+      logger.error("orchestrator.api", "fork_session_error", { session_id: sessionId, code, message, request_id: requestId });
       return c.json({ code, message, session_id: sessionId }, 500 as any);
     }
   });
@@ -337,6 +352,7 @@ export function createServer(ctx: AppContext): Hono {
   // --- Sessions: Create + Run (blocking) ---
 
   app.post("/sessions", async (c) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
     const body = await parseSessionRequest(c, ctx.sessions);
     if ("error" in body) {
       logger.warn("orchestrator.api", "invalid_create_session_request", { error: body.error });
@@ -349,14 +365,15 @@ export function createServer(ctx: AppContext): Hono {
       session_id: sessionId,
       source: body.repo ? "repo" : "workspace",
       pinned: body.pinned,
+      request_id: requestId,
     });
 
     try {
       await ensureCapacity(ctx);
-      await spawnSession(ctx, sessionId, body);
-      await waitForReady(ctx, sessionId);
+      await spawnSession(ctx, sessionId, body, requestId);
+      await waitForReady(ctx, sessionId, undefined, requestId);
       startupComplete = true;
-      logger.info("orchestrator.api", "session_ready", { session_id: sessionId });
+      logger.info("orchestrator.api", "session_ready", { session_id: sessionId, request_id: requestId });
 
       // If no message, just return the ready session
       if (!body.message) {
@@ -373,6 +390,7 @@ export function createServer(ctx: AppContext): Hono {
       const result = await sendAndCollect(ctx, sessionId, body.message!, {
         model: body.model,
         maxTurns: body.maxTurns,
+        requestId,
       });
 
       return c.json({
@@ -382,15 +400,15 @@ export function createServer(ctx: AppContext): Hono {
       });
     } catch (err) {
       if (isApiError(err)) {
-        logger.warn("orchestrator.api", "create_session_api_error", { session_id: sessionId, code: err.code });
+        logger.warn("orchestrator.api", "create_session_api_error", { session_id: sessionId, code: err.code, request_id: requestId });
         return c.json({ code: err.code, message: err.message, session_id: sessionId }, err.status as any);
       }
       if (!startupComplete) {
-        await rollbackSession(ctx, sessionId);
+        await rollbackSession(ctx, sessionId, requestId);
       }
       const message = err instanceof Error ? err.message : String(err);
       const code = categorizeError(message) as any;
-      logger.error("orchestrator.api", "create_session_error", { session_id: sessionId, code, message });
+      logger.error("orchestrator.api", "create_session_error", { session_id: sessionId, code, message, request_id: requestId });
       return c.json({ code, message, session_id: sessionId }, 500 as any);
     }
   });
@@ -398,6 +416,7 @@ export function createServer(ctx: AppContext): Hono {
   // --- Sessions: Create + Run (SSE) ---
 
   app.post("/sessions/stream", async (c) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
     const body = await parseSessionRequest(c, ctx.sessions);
     if ("error" in body) {
       logger.warn("orchestrator.api", "invalid_stream_request", { error: body.error });
@@ -409,6 +428,7 @@ export function createServer(ctx: AppContext): Hono {
     logger.info("orchestrator.api", "create_session_stream_request", {
       session_id: sessionId,
       source: body.repo ? "repo" : "workspace",
+      request_id: requestId,
     });
 
     return streamSSE(c, async (stream) => {
@@ -416,13 +436,13 @@ export function createServer(ctx: AppContext): Hono {
         await stream.writeSSE({ event: "session", data: JSON.stringify({ session_id: sessionId, status: "starting" }) });
 
         await ensureCapacity(ctx);
-        await spawnSession(ctx, sessionId, body);
+        await spawnSession(ctx, sessionId, body, requestId);
 
         // Wait for ready, streaming status updates
         await waitForReadyWithStream(ctx, sessionId, async (status) => {
           logger.debug("orchestrator.api", "stream_session_status", { session_id: sessionId, status });
           await stream.writeSSE({ event: "session", data: JSON.stringify({ session_id: sessionId, status }) });
-        });
+        }, undefined, requestId);
         startupComplete = true;
 
         // If no message, just signal ready and close
@@ -447,16 +467,16 @@ export function createServer(ctx: AppContext): Hono {
         });
       } catch (err) {
         if (isApiError(err)) {
-          logger.warn("orchestrator.api", "stream_api_error", { session_id: sessionId, code: err.code, message: err.message });
+          logger.warn("orchestrator.api", "stream_api_error", { session_id: sessionId, code: err.code, message: err.message, request_id: requestId });
           await stream.writeSSE({ event: "error", data: JSON.stringify({ code: err.code, message: err.message, session_id: sessionId }) });
           return;
         }
         if (!startupComplete) {
-          await rollbackSession(ctx, sessionId);
+          await rollbackSession(ctx, sessionId, requestId);
         }
         const message = err instanceof Error ? err.message : String(err);
         const code = categorizeError(message);
-        logger.error("orchestrator.api", "stream_session_error", { session_id: sessionId, code, message });
+        logger.error("orchestrator.api", "stream_session_error", { session_id: sessionId, code, message, request_id: requestId });
         await stream.writeSSE({ event: "error", data: JSON.stringify({ code, message, session_id: sessionId }) });
       }
     });
@@ -465,6 +485,7 @@ export function createServer(ctx: AppContext): Hono {
   // --- Messages: Follow-up (blocking) ---
 
   app.post("/sessions/:id/messages", async (c) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
     const session = ctx.sessions.get(c.req.param("id"));
     if (!session) {
       logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id"), context: "messages" });
@@ -497,11 +518,13 @@ export function createServer(ctx: AppContext): Hono {
         session_id: session.id,
         message_len: body.message.length,
         model: body.model,
+        request_id: requestId,
       });
       ctx.sessions.incrementMessages(session.id);
       const result = await sendAndCollect(ctx, session.id, body.message, {
         model: body.model,
         maxTurns: body.maxTurns,
+        requestId,
       });
 
       return c.json({ result: result.text, usage: result.usage });
@@ -515,6 +538,7 @@ export function createServer(ctx: AppContext): Hono {
   // --- Messages: Follow-up (SSE) ---
 
   app.post("/sessions/:id/messages/stream", async (c) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
     const session = ctx.sessions.get(c.req.param("id"));
     if (!session) {
       logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id"), context: "messages_stream" });
@@ -547,11 +571,12 @@ export function createServer(ctx: AppContext): Hono {
       session_id: session.id,
       message_len: body.message.length,
       model: body.model,
+      request_id: requestId,
     });
 
     return streamSSE(c, async (stream) => {
       try {
-        await sendAndStream(ctx, session.id, body.message, { model: body.model, maxTurns: body.maxTurns }, async (event) => {
+        await sendAndStream(ctx, session.id, body.message, { model: body.model, maxTurns: body.maxTurns, requestId }, async (event) => {
           const eventType = mapEventType(event.type);
           logger.debug("orchestrator.api", "stream_event", {
             session_id: session.id,
@@ -562,7 +587,7 @@ export function createServer(ctx: AppContext): Hono {
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        logger.error("orchestrator.api", "send_message_stream_error", { session_id: session.id, message });
+        logger.error("orchestrator.api", "send_message_stream_error", { session_id: session.id, message, request_id: requestId });
         await stream.writeSSE({ event: "error", data: JSON.stringify({ code: "agent_error", message }) });
       }
     });
@@ -600,7 +625,7 @@ async function parseSessionRequest(c: any, sessions?: SessionManager): Promise<S
   return body;
 }
 
-async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest) {
+async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest, requestId?: string) {
   const model = body.model || "sonnet";
   const maxTurns = body.maxTurns;
   logger.info("orchestrator.session", "spawn_session", {
@@ -609,6 +634,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
     repo: body.repo,
     workspace: body.workspace,
     branch: body.branch,
+    request_id: requestId,
   });
 
   // Assign an OAuth token from the pool for this session
@@ -649,7 +675,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       maxTurns,
     });
 
-    logger.debug("orchestrator.session", "session_db_record_created", { session_id: sessionId });
+    logger.debug("orchestrator.session", "session_db_record_created", { session_id: sessionId, request_id: requestId });
     return { session, containerId };
   } catch (err) {
     logger.error("orchestrator.session", "spawn_session_failed", {
@@ -664,25 +690,32 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
   }
 }
 
-function waitForReady(ctx: AppContext, sessionId: string, timeoutMs = 120_000): Promise<void> {
+function waitForReady(ctx: AppContext, sessionId: string, timeoutMs = 120_000, requestId?: string): Promise<void> {
   // Check if already ready (handles race where status arrived before we listen)
   const session = ctx.sessions.get(sessionId);
   if (session?.status === "ready") return Promise.resolve();
-  logger.debug("orchestrator.session", "wait_for_ready", { session_id: sessionId, timeout_ms: timeoutMs });
+  logger.debug("orchestrator.session", "wait_for_ready", {
+    session_id: sessionId,
+    timeout_ms: timeoutMs,
+    request_id: requestId,
+  });
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      logger.warn("orchestrator.session", "wait_for_ready_timeout", { session_id: sessionId });
+      logger.warn("orchestrator.session", "wait_for_ready_timeout", {
+        session_id: sessionId,
+        request_id: requestId,
+      });
       cleanup();
       reject(new Error("Timed out waiting for runner to be ready"));
     }, timeoutMs);
 
     const onStatus = (status: string) => {
-      logger.debug("orchestrator.session", "wait_for_ready_status", { session_id: sessionId, status });
+      logger.debug("orchestrator.session", "wait_for_ready_status", { session_id: sessionId, status, request_id: requestId });
       if (status === "ready") { cleanup(); resolve(); }
     };
     const onError = (_code: string, message: string) => {
-      logger.warn("orchestrator.session", "wait_for_ready_error", { session_id: sessionId, code: _code, message });
+      logger.warn("orchestrator.session", "wait_for_ready_error", { session_id: sessionId, code: _code, message, request_id: requestId });
       cleanup();
       reject(new Error(message));
     };
@@ -701,29 +734,30 @@ async function waitForReadyWithStream(
   ctx: AppContext,
   sessionId: string,
   onStatus: (status: string) => Promise<void>,
-  timeoutMs = 120_000
+  timeoutMs = 120_000,
+  requestId?: string
 ): Promise<void> {
   const session = ctx.sessions.get(sessionId);
   if (session?.status === "ready") {
-    logger.debug("orchestrator.session", "wait_for_ready_with_stream_already_ready", { session_id: sessionId });
+    logger.debug("orchestrator.session", "wait_for_ready_with_stream_already_ready", { session_id: sessionId, request_id: requestId });
     await onStatus("ready");
     return;
   }
 
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
-      logger.warn("orchestrator.session", "wait_for_ready_with_stream_timeout", { session_id: sessionId });
+      logger.warn("orchestrator.session", "wait_for_ready_with_stream_timeout", { session_id: sessionId, request_id: requestId });
       cleanup();
       reject(new Error("Timed out waiting for runner to be ready"));
     }, timeoutMs);
 
     const handleStatus = async (status: string) => {
-      logger.debug("orchestrator.session", "wait_for_ready_status_stream", { session_id: sessionId, status });
+      logger.debug("orchestrator.session", "wait_for_ready_status_stream", { session_id: sessionId, status, request_id: requestId });
       await onStatus(status);
       if (status === "ready") { cleanup(); resolve(); }
     };
     const handleError = (_code: string, message: string) => {
-      logger.warn("orchestrator.session", "wait_for_ready_with_stream_error", { session_id: sessionId, code: _code, message });
+      logger.warn("orchestrator.session", "wait_for_ready_with_stream_error", { session_id: sessionId, code: _code, message, request_id: requestId });
       cleanup();
       reject(new Error(message));
     };
@@ -742,19 +776,26 @@ function sendAndCollect(
   ctx: AppContext,
   sessionId: string,
   message: string,
-  overrides?: { model?: string; maxTurns?: number }
+  overrides?: { model?: string; maxTurns?: number; requestId?: string }
 ): Promise<{ text: string; usage: Usage }> {
   logger.debug("orchestrator.session", "send_and_collect", {
     session_id: sessionId,
     model: overrides?.model,
     max_turns: overrides?.maxTurns,
     message_len: message.length,
+    request_id: overrides?.requestId,
   });
   return new Promise((resolve, reject) => {
     let text = "";
     const usage: Usage = { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 };
+    const requestId = overrides?.requestId;
+    const traceId = getLogContext()?.traceId;
     const timeout = setTimeout(() => {
-      logger.warn("orchestrator.session", "send_and_collect_timeout", { session_id: sessionId, timeout_ms: ctx.messageTimeoutMs });
+      logger.warn("orchestrator.session", "send_and_collect_timeout", {
+        session_id: sessionId,
+        timeout_ms: ctx.messageTimeoutMs,
+        request_id: requestId,
+      });
       cleanup();
       reject(new Error(`Timed out waiting for runner result after ${ctx.messageTimeoutMs}ms`));
     }, ctx.messageTimeoutMs);
@@ -774,11 +815,11 @@ function sendAndCollect(
         usage.cost_usd = event.usage?.cost_usd || 0;
         usage.duration_ms = event.usage?.duration_ms || 0;
         ctx.sessions.addUsage(sessionId, usage);
-
         if (event.subtype === "success") {
           logger.info("orchestrator.session", "send_and_collect_result", {
             session_id: sessionId,
             usage,
+            request_id: requestId,
           });
           resolve({ text: event.result || text, usage });
         } else {
@@ -786,13 +827,14 @@ function sendAndCollect(
             session_id: sessionId,
             subtype: event.subtype,
             errors: event.errors,
+            request_id: requestId,
           });
           reject(new Error(event.errors?.join(", ") || "Agent execution failed"));
         }
       }
     };
     const onError = (_code: string, message: string) => {
-      logger.warn("orchestrator.session", "send_and_collect_error", { session_id: sessionId, code: _code, message });
+      logger.warn("orchestrator.session", "send_and_collect_error", { session_id: sessionId, code: _code, message, request_id: requestId });
       cleanup();
       reject(new Error(message));
     };
@@ -805,7 +847,11 @@ function sendAndCollect(
     ctx.bridge.on(`event:${sessionId}`, onEvent);
     ctx.bridge.on(`error:${sessionId}`, onError);
 
-    const sent = ctx.bridge.sendMessage(sessionId, message, overrides);
+    const sent = ctx.bridge.sendMessage(sessionId, message, {
+      ...overrides,
+      requestId,
+      traceId,
+    });
     if (!sent) {
       cleanup();
       reject(new Error("Runner not connected"));
@@ -817,7 +863,7 @@ async function sendAndStream(
   ctx: AppContext,
   sessionId: string,
   message: string,
-  overrides: { model?: string; maxTurns?: number } | undefined,
+  overrides: { model?: string; maxTurns?: number; requestId?: string } | undefined,
   onStreamEvent: (event: RunnerEvent) => Promise<void>
 ): Promise<void> {
   logger.debug("orchestrator.session", "send_and_stream", {
@@ -825,10 +871,17 @@ async function sendAndStream(
     model: overrides?.model,
     max_turns: overrides?.maxTurns,
     message_len: message.length,
+    request_id: overrides?.requestId,
   });
   return new Promise((resolve, reject) => {
+    const requestId = overrides?.requestId;
+    const traceId = getLogContext()?.traceId;
     const timeout = setTimeout(() => {
-      logger.warn("orchestrator.session", "send_and_stream_timeout", { session_id: sessionId, timeout_ms: ctx.messageTimeoutMs });
+      logger.warn("orchestrator.session", "send_and_stream_timeout", {
+        session_id: sessionId,
+        timeout_ms: ctx.messageTimeoutMs,
+        request_id: requestId,
+      });
       cleanup();
       reject(new Error(`Timed out waiting for runner result after ${ctx.messageTimeoutMs}ms`));
     }, ctx.messageTimeoutMs);
@@ -838,6 +891,7 @@ async function sendAndStream(
         session_id: sessionId,
         event_type: event.type,
         event_subtype: event.subtype,
+        request_id: requestId,
       });
       await onStreamEvent(event);
       if (event.type === "result") {
@@ -849,12 +903,12 @@ async function sendAndStream(
           duration_ms: event.usage?.duration_ms || 0,
         };
         ctx.sessions.addUsage(sessionId, usage);
-        logger.info("orchestrator.session", "send_and_stream_complete", { session_id: sessionId, usage });
+        logger.info("orchestrator.session", "send_and_stream_complete", { session_id: sessionId, usage, request_id: requestId });
         resolve();
       }
     };
     const onError = (_code: string, message: string) => {
-      logger.warn("orchestrator.session", "send_and_stream_error", { session_id: sessionId, code: _code, message });
+      logger.warn("orchestrator.session", "send_and_stream_error", { session_id: sessionId, code: _code, message, request_id: requestId });
       cleanup(); reject(new Error(message));
     };
     const cleanup = () => {
@@ -866,7 +920,11 @@ async function sendAndStream(
     ctx.bridge.on(`event:${sessionId}`, onEvent);
     ctx.bridge.on(`error:${sessionId}`, onError);
 
-    const sent = ctx.bridge.sendMessage(sessionId, message, overrides);
+    const sent = ctx.bridge.sendMessage(sessionId, message, {
+      ...overrides,
+      requestId,
+      traceId,
+    });
     if (!sent) {
       cleanup();
       reject(new Error("Runner not connected"));
@@ -885,8 +943,8 @@ function categorizeError(message: string): string {
   return "internal";
 }
 
-async function rollbackSession(ctx: AppContext, sessionId: string): Promise<void> {
-  logger.warn("orchestrator.session", "rollback_session", { session_id: sessionId });
+async function rollbackSession(ctx: AppContext, sessionId: string, requestId?: string): Promise<void> {
+  logger.warn("orchestrator.session", "rollback_session", { session_id: sessionId, request_id: requestId });
   ctx.bridge.sendShutdown(sessionId);
   await ctx.docker.kill(sessionId).catch(() => undefined);
   ctx.sessions.remove(sessionId);

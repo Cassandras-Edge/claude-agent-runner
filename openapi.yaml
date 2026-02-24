@@ -1,0 +1,606 @@
+openapi: 3.1.0
+info:
+  title: Claude Agent Runner
+  description: Docker-isolated Claude Code agent runtime and orchestrator
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:9080
+    description: Local development
+
+paths:
+  /health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      responses:
+        "200":
+          description: Service health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthInfo"
+
+  /sessions:
+    get:
+      operationId: listSessions
+      summary: List all sessions
+      responses:
+        "200":
+          description: List of session summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionSummary"
+
+    post:
+      operationId: createSession
+      summary: Create a session with optional blocking run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "200":
+          description: Session created (with result if message provided)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /sessions/stream:
+    post:
+      operationId: createSessionStream
+      summary: Create a session with SSE streaming
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                description: |
+                  Server-Sent Events stream. Event types:
+                  - `session` — status updates (`{ session_id, status }`)
+                  - `assistant` — assistant text (`{ type, content }`)
+                  - `tool` — tool use (`{ type, tool_name, tool_input }`)
+                  - `tool_result` — tool result (`{ type, tool_name, output }`)
+                  - `tool_progress` — tool progress updates
+                  - `thinking` — extended thinking content
+                  - `result` — final result (`{ type, subtype, result, usage, errors }`)
+                  - `error` — error (`{ code, message, session_id }`)
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /sessions/{session_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    get:
+      operationId: getSession
+      summary: Get session detail
+      responses:
+        "200":
+          description: Session detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+    patch:
+      operationId: renameSession
+      summary: Rename a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Session renamed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, name]
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  name:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+    delete:
+      operationId: deleteSession
+      summary: Stop and remove a session
+      responses:
+        "200":
+          description: Session stopped and removed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, status]
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  status:
+                    type: string
+                    enum: [stopped]
+                  total_usage:
+                    $ref: "#/components/schemas/UsageTotals"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{session_id}/transcript:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    get:
+      operationId: getTranscript
+      summary: Get session transcript
+      parameters:
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json]
+          description: Set to `json` for parsed JSON array. Omit for raw JSONL.
+      responses:
+        "200":
+          description: Transcript data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, events]
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  events:
+                    type: array
+                    items:
+                      type: object
+            application/x-ndjson:
+              schema:
+                type: string
+                description: Raw JSONL transcript lines
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{session_id}/messages:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: sendMessage
+      summary: Send a follow-up message (blocking)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "200":
+          description: Agent response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/SessionBusy"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /sessions/{session_id}/messages/stream:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: sendMessageStream
+      summary: Send a follow-up message with SSE streaming
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "200":
+          description: SSE event stream (same event types as POST /sessions/stream)
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/SessionBusy"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
+
+  /sessions/{session_id}/fork:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: forkSession
+      summary: Fork a session from its SDK state
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForkRequest"
+      responses:
+        "200":
+          description: Forked session (with result if message provided)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForkResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+components:
+  parameters:
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    Model:
+      type: string
+      enum: [haiku, sonnet, opus]
+      default: sonnet
+
+    SessionStatus:
+      type: string
+      enum: [starting, cloning, ready, busy, idle, stopped, error]
+
+    ErrorCode:
+      type: string
+      enum:
+        - invalid_request
+        - clone_failed
+        - container_failed
+        - agent_error
+        - timeout
+        - session_capacity_reached
+        - session_not_found
+        - session_busy
+        - session_stopped
+        - internal
+
+    Usage:
+      type: object
+      required: [input_tokens, output_tokens, cost_usd, duration_ms]
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        cost_usd:
+          type: number
+        duration_ms:
+          type: number
+
+    UsageTotals:
+      type: object
+      required: [input_tokens, output_tokens, cost_usd]
+      properties:
+        input_tokens:
+          type: integer
+        output_tokens:
+          type: integer
+        cost_usd:
+          type: number
+
+    SessionSource:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [repo, workspace]
+        repo:
+          type: string
+        branch:
+          type: string
+        workspace:
+          type: string
+
+    SessionSummary:
+      type: object
+      required: [session_id, status, source, model, created_at, last_activity, message_count]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        pinned:
+          type: boolean
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        source:
+          $ref: "#/components/schemas/SessionSource"
+        model:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        last_activity:
+          type: string
+          format: date-time
+        message_count:
+          type: integer
+
+    SessionDetail:
+      allOf:
+        - $ref: "#/components/schemas/SessionSummary"
+        - type: object
+          properties:
+            total_usage:
+              $ref: "#/components/schemas/UsageTotals"
+            error:
+              type: string
+            container_id:
+              type: string
+            sdk_session_id:
+              type: string
+            forked_from:
+              type: string
+              format: uuid
+
+    CreateSessionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Optional display name (must be unique)
+        pinned:
+          type: boolean
+          description: Pin session to prevent idle timeout cleanup
+        repo:
+          type: string
+          description: Git repo URL to clone
+        branch:
+          type: string
+          description: Git branch (used with repo)
+        workspace:
+          type: string
+          description: Host path to mount instead of cloning
+        message:
+          type: string
+          description: Optional first message to send after session is ready
+        model:
+          $ref: "#/components/schemas/Model"
+        systemPrompt:
+          type: string
+        appendSystemPrompt:
+          type: string
+        maxTurns:
+          type: integer
+        thinking:
+          type: boolean
+          description: Enable extended thinking (10k budget tokens)
+        allowedTools:
+          type: array
+          items:
+            type: string
+        disallowedTools:
+          type: array
+          items:
+            type: string
+        additionalDirectories:
+          type: array
+          items:
+            type: string
+        compactInstructions:
+          type: string
+          description: PreCompact hook instructions
+
+    SendMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        model:
+          type: string
+        maxTurns:
+          type: integer
+
+    ForkRequest:
+      type: object
+      properties:
+        resumeAt:
+          type: string
+          description: SDK turn ID to resume from
+        message:
+          type: string
+          description: Optional message to send immediately after fork
+        model:
+          type: string
+        systemPrompt:
+          type: string
+        appendSystemPrompt:
+          type: string
+        maxTurns:
+          type: integer
+        pinned:
+          type: boolean
+          description: Pin forked session to prevent idle timeout cleanup
+
+    SessionResult:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        result:
+          type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    MessageResult:
+      type: object
+      required: [result, usage]
+      properties:
+        result:
+          type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    ForkResult:
+      type: object
+      required: [session_id, forked_from]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        forked_from:
+          type: string
+          format: uuid
+        status:
+          type: string
+        result:
+          type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    HealthInfo:
+      type: object
+      required: [status, active_sessions, token_pool, uptime_ms, runner_image, docker_connected]
+      properties:
+        status:
+          type: string
+        active_sessions:
+          type: integer
+        token_pool:
+          type: object
+          properties:
+            size:
+              type: integer
+            usage:
+              type: object
+              additionalProperties:
+                type: integer
+        uptime_ms:
+          type: number
+        runner_image:
+          type: string
+        docker_connected:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        session_id:
+          type: string
+          format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Session not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Conflict:
+      description: Name already in use or session busy
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    SessionBusy:
+      description: Session is currently processing
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    SessionStopped:
+      description: Session has stopped
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    ServerError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"

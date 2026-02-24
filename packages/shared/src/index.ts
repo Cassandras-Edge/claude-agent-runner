@@ -108,26 +108,31 @@ export interface RunnerEvent {
   [key: string]: any;
 }
 
-export interface RunnerStatusMessage {
+interface WsCorrelation {
+  request_id?: string;
+  trace_id?: string;
+}
+
+export interface RunnerStatusMessage extends WsCorrelation {
   type: "status";
   session_id: string;
   status: SessionStatus;
 }
 
-export interface RunnerEventMessage {
+export interface RunnerEventMessage extends WsCorrelation {
   type: "event";
   session_id: string;
   event: RunnerEvent;
 }
 
-export interface RunnerErrorMessage {
+export interface RunnerErrorMessage extends WsCorrelation {
   type: "error";
   session_id: string;
   code: string;
   message: string;
 }
 
-export interface RunnerSessionInitMessage {
+export interface RunnerSessionInitMessage extends WsCorrelation {
   type: "session_init";
   session_id: string;
   sdk_session_id: string;
@@ -136,7 +141,7 @@ export interface RunnerSessionInitMessage {
 export type RunnerMessage = RunnerStatusMessage | RunnerEventMessage | RunnerErrorMessage | RunnerSessionInitMessage;
 
 /** Orchestrator → Runner: send a message to the agent */
-export interface OrchestratorMessageCommand {
+export interface OrchestratorMessageCommand extends WsCorrelation {
   type: "message";
   message: string;
   model?: string;

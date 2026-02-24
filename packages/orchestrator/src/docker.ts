@@ -1,4 +1,6 @@
 import Docker from "dockerode";
+import type { Session } from "./types.js";
+import { logger } from "./logger.js";
 
 const FORWARDED_RUNNER_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
@@ -56,6 +58,15 @@ export class DockerManager {
       throw new Error("CLAUDE_CODE_OAUTH_TOKEN missing from runner environment");
     }
 
+    logger.info("orchestrator.docker", "starting_container", {
+      session_id: config.sessionId,
+      image: config.image,
+      network: config.network,
+      has_repo: !!config.repo,
+      has_workspace: !!config.workspace,
+      has_fork_from: !!config.forkFrom,
+    });
+
     const envVars = [
       `RUNNER_SESSION_ID=${config.sessionId}`,
       `RUNNER_ORCHESTRATOR_URL=${config.orchestratorUrl}`,
@@ -101,40 +112,66 @@ export class DockerManager {
       }
     }
 
-    const container = await this.docker.createContainer({
-      Image: config.image,
-      Env: envVars,
-      HostConfig: {
-        Binds: binds.length > 0 ? binds : undefined,
-        NetworkMode: config.network,
-      },
-      Labels: {
-        "claude-orchestrator": "true",
-        "session-id": config.sessionId,
-      },
-    });
+    try {
+      const container = await this.docker.createContainer({
+        Image: config.image,
+        Env: envVars,
+        HostConfig: {
+          Binds: binds.length > 0 ? binds : undefined,
+          NetworkMode: config.network,
+        },
+        Labels: {
+          "claude-orchestrator": "true",
+          "session-id": config.sessionId,
+        },
+      });
 
-    await container.start();
-    const containerId = container.id;
-    this.containers.set(config.sessionId, containerId);
-
-    console.log(`Container ${containerId.slice(0, 12)} started for session ${config.sessionId}`);
-    return containerId;
+      await container.start();
+      const containerId = container.id;
+      this.containers.set(config.sessionId, containerId);
+      logger.info("orchestrator.docker", "container_started", {
+        session_id: config.sessionId,
+        container_id: containerId,
+        binds,
+      });
+      return containerId;
+    } catch (err: unknown) {
+      logger.error("orchestrator.docker", "failed_to_start_container", {
+        session_id: config.sessionId,
+        image: config.image,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
   }
 
   async kill(sessionId: string): Promise<void> {
     const containerId = this.containers.get(sessionId);
-    if (!containerId) return;
+    if (!containerId) {
+      logger.debug("orchestrator.docker", "kill_requested_without_container", { session_id: sessionId });
+      return;
+    }
 
+    logger.warn("orchestrator.docker", "stopping_container", { session_id: sessionId, container_id: containerId });
     try {
       const container = this.docker.getContainer(containerId);
       await container.stop({ t: 5 });
       await container.remove({ force: true });
-      console.log(`Container ${containerId.slice(0, 12)} stopped for session ${sessionId}`);
+      logger.info("orchestrator.docker", "container_stopped", {
+        session_id: sessionId,
+        container_id: containerId,
+      });
     } catch (err: any) {
       // Container may already be stopped
       if (err.statusCode !== 304 && err.statusCode !== 404) {
-        console.error(`Error stopping container ${containerId.slice(0, 12)}:`, err.message);
+        logger.error("orchestrator.docker", "failed_to_stop_container", {
+          session_id: sessionId,
+          container_id: containerId,
+          status_code: err?.statusCode,
+          error: err?.message || String(err),
+        });
+      } else {
+        logger.debug("orchestrator.docker", "container_already_stopped", { session_id: sessionId, container_id: containerId });
       }
     }
 
@@ -142,7 +179,7 @@ export class DockerManager {
   }
 
   async cleanup(): Promise<void> {
-    console.log("Cleaning up all runner containers...");
+    logger.warn("orchestrator.docker", "cleanup_start", { session_count: this.containers.size });
     const promises = Array.from(this.containers.keys()).map((sessionId) => this.kill(sessionId));
     await Promise.allSettled(promises);
   }
@@ -152,9 +189,58 @@ export class DockerManager {
       const network = this.docker.getNetwork(name);
       await network.inspect();
     } catch {
-      console.log(`Creating Docker network: ${name}`);
+      logger.warn("orchestrator.docker", "creating_network", { network: name });
       await this.docker.createNetwork({ Name: name, Driver: "bridge" });
     }
+  }
+
+  /**
+   * Rebuild in-memory sessionId -> containerId mappings after orchestrator restart,
+   * and report which persisted sessions still have a running container.
+   */
+  async recoverFromSessions(sessions: Session[]): Promise<{
+    running: string[];
+    notRunning: string[];
+    missing: string[];
+  }> {
+    const running: string[] = [];
+    const notRunning: string[] = [];
+    const missing: string[] = [];
+
+    this.containers.clear();
+    logger.info("orchestrator.docker", "recovering_sessions", { session_count: sessions.length });
+
+    for (const session of sessions) {
+      try {
+        const container = this.docker.getContainer(session.containerId);
+        const info = await container.inspect();
+        if (info?.State?.Running) {
+          this.containers.set(session.id, session.containerId);
+          running.push(session.id);
+        } else {
+          notRunning.push(session.id);
+        }
+      } catch (err: any) {
+        if (err?.statusCode === 404) {
+          missing.push(session.id);
+        } else {
+          logger.error("orchestrator.docker", "recover_session_inspect_failed", {
+            session_id: session.id,
+            container_id: session.containerId,
+            status_code: err?.statusCode,
+            error: err?.message || String(err),
+          });
+          notRunning.push(session.id);
+        }
+      }
+    }
+
+    logger.info("orchestrator.docker", "recovered_sessions", {
+      running_count: running.length,
+      not_running_count: notRunning.length,
+      missing_count: missing.length,
+    });
+    return { running, notRunning, missing };
   }
 
   getContainerId(sessionId: string): string | undefined {

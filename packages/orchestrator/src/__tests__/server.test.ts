@@ -91,6 +91,8 @@ describe("Server Routes", () => {
       sessionsPath: tmpSessionsPath,
       wsPort: 9999,
       orchestratorWsUrl: "ws://localhost:9999",
+      messageTimeoutMs: 60_000,
+      maxActiveSessions: undefined,
       startedAt: new Date("2025-01-01T00:00:00Z"),
     } as any);
   });
@@ -173,6 +175,46 @@ describe("Server Routes", () => {
     });
   });
 
+  describe("PATCH /sessions/:id", () => {
+    it("returns 404 for unknown session", async () => {
+      const { status, json } = await jsonResponse(app, "PATCH", "/sessions/unknown", { name: "new-name" });
+      expect(status).toBe(404);
+      expect(json.code).toBe("session_not_found");
+    });
+
+    it("updates session name", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+
+      const { status, json } = await jsonResponse(app, "PATCH", "/sessions/s1", { name: "new-name" });
+      expect(status).toBe(200);
+      expect(json.name).toBe("new-name");
+      expect(sessions.get("s1")!.name).toBe("new-name");
+    });
+
+    it("updates pinned state", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+
+      const { status, json } = await jsonResponse(app, "PATCH", "/sessions/s1", { pinned: true });
+      expect(status).toBe(200);
+      expect(json.pinned).toBe(true);
+      expect(sessions.get("s1")!.pinned).toBe(true);
+    });
+
+    it("requires at least one supported field", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      const { status, json } = await jsonResponse(app, "PATCH", "/sessions/s1", {});
+      expect(status).toBe(400);
+      expect(json.code).toBe("invalid_request");
+    });
+
+    it("rejects non-boolean pinned", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      const { status, json } = await jsonResponse(app, "PATCH", "/sessions/s1", { pinned: "yes" });
+      expect(status).toBe(400);
+      expect(json.code).toBe("invalid_request");
+    });
+  });
+
   describe("DELETE /sessions/:id", () => {
     it("stops and removes a session", async () => {
       sessions.create("s1", "c1", 0, { model: "sonnet" });
@@ -211,6 +253,74 @@ describe("Server Routes", () => {
       const json = await res.json();
       expect(res.status).toBe(400);
       expect(json.code).toBe("invalid_request");
+    });
+
+    it("rejects non-boolean pinned", async () => {
+      const { status, json } = await jsonResponse(app, "POST", "/sessions", {
+        repo: "https://github.com/test/repo",
+        pinned: "true",
+      });
+      expect(status).toBe(400);
+      expect(json.code).toBe("invalid_request");
+    });
+
+    it("returns 429 when max active session capacity is reached and nothing is evictable", async () => {
+      const cappedApp = createServer({
+        sessions,
+        docker,
+        bridge,
+        tokenPool,
+        env: {} as Record<string, string>,
+        runnerImage: "claude-runner:test",
+        network: "test-net",
+        sessionsVolume: "test-sessions",
+        sessionsPath: tmpSessionsPath,
+        wsPort: 9999,
+        orchestratorWsUrl: "ws://localhost:9999",
+        messageTimeoutMs: 60_000,
+        maxActiveSessions: 1,
+        startedAt: new Date("2025-01-01T00:00:00Z"),
+      } as any);
+
+      sessions.create("s1", "c1", 0, { model: "sonnet", pinned: true });
+      sessions.updateStatus("s1", "busy");
+
+      const { status, json } = await jsonResponse(cappedApp, "POST", "/sessions", { workspace: "/tmp/workspace" });
+      expect(status).toBe(429);
+      expect(json.code).toBe("session_capacity_reached");
+    });
+
+    it("evicts least-recently-active unpinned ready/idle sessions when at capacity", async () => {
+      const cappedApp = createServer({
+        sessions,
+        docker,
+        bridge,
+        tokenPool,
+        env: {} as Record<string, string>,
+        runnerImage: "claude-runner:test",
+        network: "test-net",
+        sessionsVolume: "test-sessions",
+        sessionsPath: tmpSessionsPath,
+        wsPort: 9999,
+        orchestratorWsUrl: "ws://localhost:9999",
+        messageTimeoutMs: 60_000,
+        maxActiveSessions: 1,
+        startedAt: new Date("2025-01-01T00:00:00Z"),
+      } as any);
+
+      const assigned = tokenPool.assign("s-evict");
+      sessions.create("s-evict", "c-evict", assigned.tokenIndex, { model: "sonnet" });
+      sessions.updateStatus("s-evict", "idle");
+      db.prepare("UPDATE sessions SET last_activity = ? WHERE id = ?").run("2025-01-01T00:00:00.000Z", "s-evict");
+
+      docker.spawn.mockRejectedValueOnce(new Error("container failed"));
+
+      const { status } = await jsonResponse(cappedApp, "POST", "/sessions", { workspace: "/tmp/workspace" });
+      expect(status).toBe(500);
+      expect(bridge.sendShutdown).toHaveBeenCalledWith("s-evict");
+      expect(docker.kill).toHaveBeenCalledWith("s-evict");
+      expect(sessions.get("s-evict")!.status).toBe("stopped");
+      expect(tokenPool.get("s-evict")).toBeUndefined();
     });
   });
 

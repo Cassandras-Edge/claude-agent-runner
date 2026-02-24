@@ -1,6 +1,8 @@
 services:
   orchestrator:
-    build: ./packages/orchestrator
+    build:
+      context: .
+      dockerfile: packages/orchestrator/Dockerfile
     container_name: claude-orchestrator
     ports:
       - "9080:8080"
@@ -15,6 +17,9 @@ services:
       - RUNNER_IMAGE=claude-runner:latest
       - DOCKER_NETWORK=claude-net
       - IDLE_TIMEOUT_MS=300000
+      - MESSAGE_TIMEOUT_MS=600000
+      - CLEANUP_RUNNERS_ON_EXIT=false
+      - MAX_ACTIVE_SESSIONS=8
       - ORCHESTRATOR_HOST=claude-orchestrator
       - SESSIONS_VOLUME=claude-sessions
       - SESSIONS_PATH=/data/sessions

@@ -61,6 +61,11 @@ describe("SessionManager", () => {
       manager.create("s1", "c1", 2, { model: "sonnet" });
       expect(manager.getTokenIndex("s1")).toBe(2);
     });
+
+    it("stores pinned flag", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet", pinned: true });
+      expect(manager.get("s1")!.pinned).toBe(true);
+    });
   });
 
   describe("get", () => {
@@ -218,7 +223,7 @@ describe("SessionManager", () => {
   });
 
   describe("constructor recovery", () => {
-    it("marks non-terminal sessions as stopped on startup", () => {
+    it("preserves persisted status on startup (recovery handled by orchestrator boot)", () => {
       // Create sessions directly in DB to simulate pre-restart state
       const now = new Date().toISOString();
       db.prepare(`
@@ -233,7 +238,7 @@ describe("SessionManager", () => {
       // Re-create manager (simulates restart)
       const newManager = new SessionManager(db);
 
-      expect(newManager.get("s-ready")!.status).toBe("stopped");
+      expect(newManager.get("s-ready")!.status).toBe("ready");
       expect(newManager.get("s-stopped")!.status).toBe("stopped");
     });
   });
@@ -281,6 +286,42 @@ describe("SessionManager", () => {
 
     it("nameExists returns false for unused names", () => {
       expect(manager.nameExists("nope")).toBe(false);
+    });
+  });
+
+  describe("pinned", () => {
+    it("defaults to false", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet" });
+      expect(manager.get("s1")!.pinned).toBe(false);
+    });
+
+    it("updates pinned state", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet" });
+      manager.setPinned("s1", true);
+      expect(manager.get("s1")!.pinned).toBe(true);
+
+      manager.setPinned("s1", false);
+      expect(manager.get("s1")!.pinned).toBe(false);
+    });
+  });
+
+  describe("evictableByLru", () => {
+    it("returns only ready/idle unpinned sessions in least-recently-active order", () => {
+      manager.create("s-ready-old", "c1", 0, { model: "sonnet" });
+      manager.create("s-idle-new", "c2", 0, { model: "sonnet" });
+      manager.create("s-busy", "c3", 0, { model: "sonnet" });
+      manager.create("s-pinned", "c4", 0, { model: "sonnet", pinned: true });
+
+      manager.updateStatus("s-ready-old", "ready");
+      manager.updateStatus("s-idle-new", "idle");
+      manager.updateStatus("s-busy", "busy");
+      manager.updateStatus("s-pinned", "ready");
+
+      db.prepare("UPDATE sessions SET last_activity = ? WHERE id = ?").run("2025-01-01T00:00:00.000Z", "s-ready-old");
+      db.prepare("UPDATE sessions SET last_activity = ? WHERE id = ?").run("2025-01-01T00:10:00.000Z", "s-idle-new");
+
+      const evictable = manager.evictableByLru();
+      expect(evictable.map((s) => s.id)).toEqual(["s-ready-old", "s-idle-new"]);
     });
   });
 

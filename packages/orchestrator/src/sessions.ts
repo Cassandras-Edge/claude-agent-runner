@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import type { Session, SessionStatus, Usage } from "./types.js";
 import type { SessionRow } from "./db.js";
 import { rowToSession } from "./db.js";
+import { logger } from "./logger.js";
 
 export class SessionManager {
   private db: Database.Database;
@@ -11,17 +12,11 @@ export class SessionManager {
 
   constructor(db: Database.Database) {
     this.db = db;
-
-    // Mark any sessions that were "starting"/"cloning"/"ready"/"busy"/"idle" as stopped
-    // (they were interrupted by an orchestrator restart)
-    this.db.prepare(`
-      UPDATE sessions SET status = 'stopped', last_activity = ?
-      WHERE status NOT IN ('stopped', 'error')
-    `).run(new Date().toISOString());
   }
 
   create(id: string, containerId: string, oauthTokenIndex: number, config: {
     name?: string;
+    pinned?: boolean;
     repo?: string;
     branch?: string;
     workspace?: string;
@@ -33,16 +28,25 @@ export class SessionManager {
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, repo, branch, workspace, model, system_prompt, max_turns, forked_from, created_at, last_activity)
-      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, model, system_prompt, max_turns, forked_from, created_at, last_activity)
+      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, containerId, oauthTokenIndex,
       config.name ?? null,
+      config.pinned ? 1 : 0,
       config.repo ?? null, config.branch ?? null, config.workspace ?? null,
       config.model, config.systemPrompt ?? null, config.maxTurns ?? null,
       config.forkedFrom ?? null,
       now, now,
     );
+    logger.info("orchestrator.session", "created_session", {
+      session_id: id,
+      container_id: containerId,
+      model: config.model,
+      source_type: config.repo ? "repo" : "workspace",
+      pinned: !!config.pinned,
+      forked_from: config.forkedFrom,
+    });
 
     return this.get(id)!;
   }
@@ -50,6 +54,7 @@ export class SessionManager {
   get(id: string): Session | undefined {
     const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
     if (!row) return undefined;
+    logger.debug("orchestrator.session", "fetched_session", { session_id: id });
 
     const session = rowToSession(row);
     const rt = this.runtime.get(id);
@@ -62,6 +67,7 @@ export class SessionManager {
 
   list(): Session[] {
     const rows = this.db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all() as SessionRow[];
+    logger.debug("orchestrator.session", "listed_sessions", { count: rows.length });
     return rows.map((row) => {
       const session = rowToSession(row);
       const rt = this.runtime.get(row.id);
@@ -74,26 +80,36 @@ export class SessionManager {
   }
 
   updateStatus(id: string, status: SessionStatus): void {
+    logger.debug("orchestrator.session", "status_update", { session_id: id, status });
     this.db.prepare("UPDATE sessions SET status = ?, last_activity = ? WHERE id = ?")
       .run(status, new Date().toISOString(), id);
   }
 
   setError(id: string, error: string): void {
+    logger.warn("orchestrator.session", "session_error", { session_id: id, error });
     this.db.prepare("UPDATE sessions SET status = 'error', last_error = ?, last_activity = ? WHERE id = ?")
       .run(error, new Date().toISOString(), id);
   }
 
   setSdkSessionId(id: string, sdkSessionId: string): void {
+    logger.debug("orchestrator.session", "sdk_session_id_set", { session_id: id, sdk_session_id: sdkSessionId });
     this.db.prepare("UPDATE sessions SET sdk_session_id = ?, last_activity = ? WHERE id = ?")
       .run(sdkSessionId, new Date().toISOString(), id);
   }
 
   incrementMessages(id: string): void {
+    logger.debug("orchestrator.session", "increment_message_count", { session_id: id });
     this.db.prepare("UPDATE sessions SET message_count = message_count + 1, last_activity = ? WHERE id = ?")
       .run(new Date().toISOString(), id);
   }
 
   addUsage(id: string, usage: Usage): void {
+    logger.debug("orchestrator.session", "add_usage", {
+      session_id: id,
+      input_tokens: usage.input_tokens,
+      output_tokens: usage.output_tokens,
+      cost_usd: usage.cost_usd,
+    });
     this.db.prepare(`
       UPDATE sessions SET
         input_tokens = input_tokens + ?,
@@ -105,6 +121,7 @@ export class SessionManager {
 
   remove(id: string): Session | undefined {
     const session = this.get(id);
+    logger.info("orchestrator.session", "remove_session", { session_id: id });
     this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
     this.runtime.delete(id);
     return session;
@@ -142,6 +159,7 @@ export class SessionManager {
     ).get(name, id) as { id: string } | undefined;
     if (existing) return false;
 
+    logger.info("orchestrator.session", "rename_session", { session_id: id, name });
     this.db.prepare("UPDATE sessions SET name = ? WHERE id = ?").run(name, id);
     return true;
   }
@@ -150,6 +168,24 @@ export class SessionManager {
   nameExists(name: string): boolean {
     const row = this.db.prepare("SELECT id FROM sessions WHERE name = ?").get(name) as { id: string } | undefined;
     return !!row;
+  }
+
+  setPinned(id: string, pinned: boolean): void {
+    logger.info("orchestrator.session", "set_pinned", { session_id: id, pinned });
+    this.db.prepare("UPDATE sessions SET pinned = ? WHERE id = ?").run(pinned ? 1 : 0, id);
+  }
+
+  /**
+   * Capacity-evictable sessions ordered from least-recently-active to most-recently-active.
+   * Only ready/idle and not pinned sessions are candidates.
+   */
+  evictableByLru(): Session[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM sessions
+      WHERE status IN ('ready', 'idle') AND pinned = 0
+      ORDER BY last_activity ASC
+    `).all() as SessionRow[];
+    return rows.map((row) => rowToSession(row));
   }
 
   // --- Runtime-only state management ---

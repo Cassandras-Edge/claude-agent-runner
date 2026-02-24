@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_error TEXT,
   sdk_session_id TEXT,
   forked_from TEXT,
-  name TEXT
+  name TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -47,11 +48,13 @@ export interface SessionRow {
   sdk_session_id: string | null;
   forked_from: string | null;
   name: string | null;
+  pinned: number;
 }
 
 // Idempotent migrations for columns added after initial schema
 const MIGRATIONS = [
   "ALTER TABLE sessions ADD COLUMN name TEXT",
+  "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
 ];
 
 function runMigrations(db: Database.Database): void {
@@ -97,5 +100,6 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     sdkSessionId: row.sdk_session_id ?? undefined,
     forkedFrom: row.forked_from ?? undefined,
     name: row.name ?? undefined,
+    pinned: row.pinned === 1,
   };
 }

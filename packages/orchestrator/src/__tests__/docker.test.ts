@@ -7,6 +7,7 @@ const mockContainer = {
   start: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(undefined),
   remove: vi.fn().mockResolvedValue(undefined),
+  inspect: vi.fn().mockResolvedValue({ State: { Running: true } }),
 };
 
 const mockNetwork = {
@@ -182,6 +183,53 @@ describe("DockerManager", () => {
   describe("getContainerId", () => {
     it("returns undefined for unknown sessions", () => {
       expect(manager.getContainerId("unknown")).toBeUndefined();
+    });
+  });
+
+  describe("recoverFromSessions", () => {
+    it("restores mappings for running containers", async () => {
+      const result = await manager.recoverFromSessions([
+        {
+          id: "session-1",
+          containerId: "abc123def456",
+        } as any,
+      ]);
+
+      expect(result.running).toEqual(["session-1"]);
+      expect(result.notRunning).toEqual([]);
+      expect(result.missing).toEqual([]);
+      expect(manager.getContainerId("session-1")).toBe("abc123def456");
+    });
+
+    it("classifies non-running containers", async () => {
+      mockContainer.inspect.mockResolvedValueOnce({ State: { Running: false } });
+
+      const result = await manager.recoverFromSessions([
+        {
+          id: "session-1",
+          containerId: "abc123def456",
+        } as any,
+      ]);
+
+      expect(result.running).toEqual([]);
+      expect(result.notRunning).toEqual(["session-1"]);
+      expect(result.missing).toEqual([]);
+      expect(manager.getContainerId("session-1")).toBeUndefined();
+    });
+
+    it("classifies missing containers (404)", async () => {
+      mockContainer.inspect.mockRejectedValueOnce({ statusCode: 404, message: "not found" });
+
+      const result = await manager.recoverFromSessions([
+        {
+          id: "session-1",
+          containerId: "abc123def456",
+        } as any,
+      ]);
+
+      expect(result.running).toEqual([]);
+      expect(result.notRunning).toEqual([]);
+      expect(result.missing).toEqual(["session-1"]);
     });
   });
 

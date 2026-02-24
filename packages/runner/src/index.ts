@@ -3,8 +3,10 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { randomUUID } from "crypto";
+import type { OrchestratorCommand } from "@claude-agent-runner/shared";
 import { serializeEvent } from "./serialize.js";
 import { createStderrRingBuffer, buildZeroEventError } from "./helpers.js";
+import { runWithLogContext, logger } from "./logger.js";
 
 // --- Config from env ---
 
@@ -35,14 +37,31 @@ const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_M
 const WORKSPACE = "/workspace";
 
 if (!ORCHESTRATOR_URL) {
-  console.error("RUNNER_ORCHESTRATOR_URL is required");
+  logger.error("runner.config", "RUNNER_ORCHESTRATOR_URL is required");
   process.exit(1);
 }
+
+logger.info("runner.config", "runner_startup_config", {
+  session_id: SESSION_ID,
+  orchestrator_url: ORCHESTRATOR_URL,
+  model: MODEL,
+  workspace: WORKSPACE,
+  repo: REPO ? "provided" : "none",
+  fork_session: FORK_SESSION,
+  branch: BRANCH,
+});
 
 // --- Git clone ---
 
 function cloneRepo(): void {
-  if (!REPO) return;
+  if (!REPO) {
+    logger.info("runner.git", "repo_not_configured", { session_id: SESSION_ID });
+    return;
+  }
+  if (existsSync(`${WORKSPACE}/.git`)) {
+    logger.info("runner.git", "workspace_already_initialized", { workspace: WORKSPACE });
+    return;
+  }
 
   let cloneUrl = REPO;
   if (GIT_TOKEN && cloneUrl.startsWith("https://")) {
@@ -50,21 +69,24 @@ function cloneRepo(): void {
     cloneUrl = cloneUrl.replace("https://", `https://x-access-token:${GIT_TOKEN}@`);
   }
 
-  console.log(`Cloning ${REPO} (branch: ${BRANCH}) into ${WORKSPACE}`);
+  logger.info("runner.git", "clone_start", { repo: REPO, branch: BRANCH, workspace: WORKSPACE });
   try {
     execSync(`git clone --branch ${BRANCH} --single-branch --depth 1 ${cloneUrl} ${WORKSPACE}`, {
       stdio: "inherit",
       timeout: 120_000,
     });
-    console.log("Clone complete");
+    logger.info("runner.git", "clone_complete", { workspace: WORKSPACE });
   } catch (err) {
-    throw new Error(`Git clone failed: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error("runner.git", "clone_failed", { session_id: SESSION_ID, repo: REPO, branch: BRANCH, error: message });
+    throw new Error(`Git clone failed: ${message}`);
   }
 }
 
 function buildClaudeChildEnv(): Record<string, string> {
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (!oauthToken) {
+    logger.error("runner.config", "missing_oauth_token", { session_id: SESSION_ID });
     throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process");
   }
 
@@ -82,10 +104,17 @@ function buildClaudeChildEnv(): Record<string, string> {
 // --- Agent runner ---
 
 let sessionId: string | undefined;
+let setupCompleted = false;
 
-async function runAgent(ws: WebSocket, message: string, overrides?: { model?: string; maxTurns?: number }): Promise<void> {
+async function runAgent(
+  ws: WebSocket,
+  message: string,
+  overrides?: { model?: string; maxTurns?: number; requestId?: string; traceId?: string },
+): Promise<void> {
   const model = overrides?.model || MODEL;
   const maxTurns = overrides?.maxTurns ?? MAX_TURNS;
+  const requestId = overrides?.requestId;
+  const traceId = overrides?.traceId;
   const childEnv = buildClaudeChildEnv();
   const stderrRing = createStderrRingBuffer(200);
 
@@ -98,6 +127,17 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
       })],
     }];
   }
+
+  logger.info("runner.agent", "query_start", {
+    session_id: SESSION_ID,
+    request_id: requestId,
+    trace_id: traceId,
+    model,
+    max_turns: maxTurns,
+    has_append_prompt: Boolean(APPEND_SYSTEM_PROMPT),
+    has_system_prompt: Boolean(SYSTEM_PROMPT),
+    has_fork_from: Boolean(FORK_FROM),
+  });
 
   const response = query({
     prompt: message,
@@ -124,18 +164,26 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
       env: childEnv,
       stderr: (data: string) => {
         stderrRing.push(data);
-        console.error("[SDK stderr]", data);
+        logger.debug("runner.agent", "sdk_stderr", { session_id: SESSION_ID, data: data.trim().slice(0, 500) });
       },
     },
   });
 
-  console.log(`query() called with model=${model}, maxTurns=${maxTurns}, cwd=${WORKSPACE}`);
+  logger.debug("runner.agent", "query_invoked", {
+    session_id: SESSION_ID,
+    cwd: WORKSPACE,
+    model,
+    max_turns: maxTurns,
+  });
 
   let eventCount = 0;
   let firstEventTimeoutTriggered = false;
   const firstEventTimer = setTimeout(() => {
     firstEventTimeoutTriggered = true;
-    console.error(`No SDK events received within ${FIRST_EVENT_TIMEOUT_MS}ms, closing query response`);
+    logger.error("runner.agent", "first_event_timeout", {
+      session_id: SESSION_ID,
+      timeout_ms: FIRST_EVENT_TIMEOUT_MS,
+    });
     response.close();
   }, FIRST_EVENT_TIMEOUT_MS);
 
@@ -152,8 +200,20 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
         if (!sessionId && "session_id" in event && event.session_id) {
           sessionId = event.session_id;
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: "session_init", session_id: SESSION_ID, sdk_session_id: sessionId }));
+            ws.send(JSON.stringify({
+              type: "session_init",
+              session_id: SESSION_ID,
+              sdk_session_id: sessionId,
+              request_id: requestId,
+              trace_id: traceId,
+            }));
           }
+          logger.info("runner.agent", "session_id_acquired", {
+            runner_session_id: SESSION_ID,
+            sdk_session_id: sessionId,
+            request_id: requestId,
+            trace_id: traceId,
+          });
         }
 
         // Forward event to orchestrator
@@ -163,11 +223,25 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
             type: "event",
             session_id: SESSION_ID,
             event: serialized,
+            request_id: requestId,
+            trace_id: traceId,
           }));
         }
 
+        logger.debug("runner.agent", "sdk_event", {
+          session_id: SESSION_ID,
+          sdk_session_id: sessionId,
+          event_type: event.type,
+          event_subtype: event.subtype,
+        });
+
         // Stop on result
         if (event.type === "result") {
+          logger.info("runner.agent", "result_received", {
+            session_id: SESSION_ID,
+            sdk_session_id: sessionId,
+            result_type: event.subtype,
+          });
           break;
         }
       }
@@ -183,7 +257,10 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
         ));
       }
 
-      console.error("Error iterating SDK events:", iterErr);
+      logger.error("runner.agent", "sdk_iteration_error", {
+        session_id: SESSION_ID,
+        error: iterErr instanceof Error ? iterErr.message : String(iterErr),
+      });
       throw iterErr;
     }
 
@@ -201,36 +278,46 @@ async function runAgent(ws: WebSocket, message: string, overrides?: { model?: st
       ));
     }
 
-    console.log(`Total events received: ${eventCount}`);
+    logger.info("runner.agent", "total_events", {
+      session_id: SESSION_ID,
+      sdk_session_id: sessionId,
+      event_count: eventCount,
+    });
   } finally {
     clearTimeout(firstEventTimer);
     response.close();
+    logger.debug("runner.agent", "query_closed", { session_id: SESSION_ID });
   }
 }
 
 // --- WebSocket connection to orchestrator ---
 
 function connect(): void {
-  console.log(`Connecting to orchestrator at ${ORCHESTRATOR_URL}`);
+  logger.info("runner.ws", "connecting", { orchestrator_url: ORCHESTRATOR_URL, session_id: SESSION_ID });
   const ws = new WebSocket(ORCHESTRATOR_URL!);
 
   ws.on("open", () => {
-    console.log("Connected to orchestrator");
+    logger.info("runner.ws", "connected", { session_id: SESSION_ID });
 
     // Setup phase: clone repo if needed
     try {
-      if (REPO) {
-        ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "cloning" }));
-        cloneRepo();
-      }
+      if (!setupCompleted) {
+        if (REPO) {
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "cloning" }));
+          cloneRepo();
+        }
 
-      if (!existsSync(WORKSPACE)) {
-        throw new Error(`Workspace not found at ${WORKSPACE}`);
+        if (!existsSync(WORKSPACE)) {
+          throw new Error(`Workspace not found at ${WORKSPACE}`);
+        }
+
+        setupCompleted = true;
       }
 
       ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready" }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logger.error("runner.ws", "setup_failed", { session_id: SESSION_ID, error: message });
       ws.send(JSON.stringify({ type: "error", session_id: SESSION_ID, code: "clone_failed", message }));
       ws.close();
       process.exit(1);
@@ -238,52 +325,89 @@ function connect(): void {
   });
 
   ws.on("message", async (data) => {
-    let msg: any;
+    let msg: OrchestratorCommand;
     try {
       msg = JSON.parse(data.toString());
     } catch {
+      logger.warn("runner.ws", "invalid_json_from_orchestrator", { session_id: SESSION_ID });
       return;
     }
 
     if (msg.type === "message") {
-      console.log(`Received message: ${msg.message?.slice(0, 80)}...`);
-      ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "busy" }));
-
-      try {
-        console.log("Starting agent...");
-        await runAgent(ws, msg.message, { model: msg.model, maxTurns: msg.maxTurns });
-        console.log("Agent finished");
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        ws.send(JSON.stringify({
-          type: "event",
+      const requestId = msg.request_id;
+      const traceId = msg.trace_id;
+      return runWithLogContext({ sessionId: SESSION_ID, requestId, traceId }, async () => {
+        logger.info("runner.ws", "message_received", {
           session_id: SESSION_ID,
-          event: { type: "result", subtype: "error_during_execution", result: "", errors: [errorMsg], usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 } },
+          message_preview: msg.message?.slice(0, 120),
+          model: msg.model,
+          request_id: requestId,
+          trace_id: traceId,
+        });
+        ws.send(JSON.stringify({
+          type: "status",
+          session_id: SESSION_ID,
+          status: "busy",
+          request_id: requestId,
+          trace_id: traceId,
         }));
-      }
 
-      ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready" }));
+        try {
+          logger.debug("runner.ws", "run_agent_starting", { session_id: SESSION_ID });
+          await runAgent(ws, msg.message, { model: msg.model, maxTurns: msg.maxTurns, requestId, traceId });
+          logger.debug("runner.ws", "run_agent_completed", { session_id: SESSION_ID });
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          logger.error("runner.ws", "agent_execution_failed", { session_id: SESSION_ID, error: errorMsg });
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "event",
+              session_id: SESSION_ID,
+              request_id: requestId,
+              trace_id: traceId,
+              event: {
+                type: "result",
+                subtype: "error_during_execution",
+                result: "",
+                errors: [errorMsg],
+                usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 },
+              },
+            }));
+          }
+        }
+
+        ws.send(JSON.stringify({
+          type: "status",
+          session_id: SESSION_ID,
+          status: "ready",
+          request_id: requestId,
+          trace_id: traceId,
+        }));
+      });
     }
 
     if (msg.type === "shutdown") {
-      console.log("Shutdown requested");
+      logger.info("runner.ws", "shutdown_requested", { session_id: SESSION_ID });
       ws.close();
       process.exit(0);
     }
   });
 
   ws.on("close", () => {
-    console.log("Disconnected from orchestrator");
+    logger.warn("runner.ws", "disconnected", { session_id: SESSION_ID, reconnect_delay_ms: 3000 });
     // Attempt reconnect after 3s
     setTimeout(connect, 3000);
   });
 
   ws.on("error", (err) => {
-    console.error("WebSocket error:", err.message);
+    logger.error("runner.ws", "websocket_error", {
+      session_id: SESSION_ID,
+      error: err.message,
+    });
   });
 }
 
 // --- Start ---
 
-console.log(`claude-runner starting (session: ${SESSION_ID})`);
+logger.info("runner.start", "starting_runner", { session_id: SESSION_ID });
 connect();

@@ -47,7 +47,7 @@ describe("openDb", () => {
       "repo", "branch", "workspace", "model", "system_prompt", "max_turns",
       "created_at", "last_activity", "message_count",
       "input_tokens", "output_tokens", "cost_usd", "last_error",
-      "sdk_session_id", "forked_from", "name",
+      "sdk_session_id", "forked_from", "name", "pinned",
     ];
 
     for (const col of expected) {
@@ -79,6 +79,7 @@ describe("rowToSession", () => {
       sdk_session_id: "sdk-123",
       forked_from: "parent-session",
       name: "my-session",
+      pinned: 1,
     };
 
     const session = rowToSession(row);
@@ -101,6 +102,7 @@ describe("rowToSession", () => {
     expect(session.sdkSessionId).toBe("sdk-123");
     expect(session.forkedFrom).toBe("parent-session");
     expect(session.name).toBe("my-session");
+    expect(session.pinned).toBe(true);
   });
 
   it("converts null optional fields to undefined", () => {
@@ -125,6 +127,7 @@ describe("rowToSession", () => {
       sdk_session_id: null,
       forked_from: null,
       name: null,
+      pinned: 0,
     };
 
     const session = rowToSession(row);
@@ -138,5 +141,6 @@ describe("rowToSession", () => {
     expect(session.sdkSessionId).toBeUndefined();
     expect(session.forkedFrom).toBeUndefined();
     expect(session.name).toBeUndefined();
+    expect(session.pinned).toBe(false);
   });
 });
