@@ -11,11 +11,13 @@ import type {
   RunnerEvent,
   Usage,
 } from "./types.js";
+import type { TokenPool } from "./token-pool.js";
 
 interface AppContext {
   sessions: SessionManager;
   docker: DockerManager;
   bridge: WsBridge;
+  tokenPool: TokenPool;
   env: Record<string, string>;
   runnerImage: string;
   network: string;
@@ -34,6 +36,10 @@ export function createServer(ctx: AppContext): Hono {
     return c.json({
       status: "ok",
       active_sessions: ctx.sessions.activeCount(),
+      token_pool: {
+        size: ctx.tokenPool.size,
+        usage: ctx.tokenPool.usage(),
+      },
       uptime_ms: Date.now() - ctx.startedAt.getTime(),
       runner_image: ctx.runnerImage,
       docker_connected: dockerConnected,
@@ -104,6 +110,7 @@ export function createServer(ctx: AppContext): Hono {
     };
 
     ctx.sessions.remove(session.id);
+    ctx.tokenPool.release(session.id);
     return c.json(result);
   });
 
@@ -268,13 +275,17 @@ async function parseSessionRequest(c: any): Promise<SessionRequest | { error: Er
 
 async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest) {
   const model = body.model || "sonnet";
-  const maxTurns = body.maxTurns || 25;
+  const maxTurns = body.maxTurns;
+
+  // Assign an OAuth token from the pool for this session
+  const token = ctx.tokenPool.assign(sessionId);
+  const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
 
   const containerId = await ctx.docker.spawn({
     sessionId,
     image: ctx.runnerImage,
     orchestratorUrl: ctx.orchestratorWsUrl,
-    env: ctx.env,
+    env: sessionEnv,
     network: ctx.network,
     repo: body.repo,
     branch: body.branch,
@@ -282,6 +293,8 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
     model,
     systemPrompt: body.systemPrompt,
     maxTurns,
+    additionalDirectories: body.additionalDirectories,
+    compactInstructions: body.compactInstructions,
   });
 
   const session = ctx.sessions.create(sessionId, containerId, {

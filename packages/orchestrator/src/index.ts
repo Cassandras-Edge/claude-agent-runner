@@ -4,6 +4,7 @@ import { createServer } from "./server.js";
 import { SessionManager } from "./sessions.js";
 import { DockerManager } from "./docker.js";
 import { WsBridge } from "./ws-bridge.js";
+import { TokenPool } from "./token-pool.js";
 
 // --- Config ---
 
@@ -16,14 +17,17 @@ const IDLE_TIMEOUT_MS = parseInt(process.env.IDLE_TIMEOUT_MS || "300000", 10);
 const ORCHESTRATOR_HOST = process.env.ORCHESTRATOR_HOST || "host.docker.internal";
 const ORCHESTRATOR_WS_URL = `ws://${ORCHESTRATOR_HOST}:${WS_PORT}`;
 
-// Intentionally forward only the minimal secret set needed by runners.
-const runnerEnv: Record<string, string> = {};
-const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-if (!oauthToken) {
+// --- Token pool ---
+// Supports multiple OAuth tokens (comma-separated). Each session gets pinned to one token.
+const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+if (!oauthTokens) {
   console.error("CLAUDE_CODE_OAUTH_TOKEN is required");
   process.exit(1);
 }
-runnerEnv.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+const tokenPool = new TokenPool(oauthTokens);
+
+// Base env forwarded to runners (token is added per-session by the server)
+const runnerEnv: Record<string, string> = {};
 if (process.env.GIT_TOKEN) runnerEnv.GIT_TOKEN = process.env.GIT_TOKEN;
 if (process.env.GITHUB_TOKEN) runnerEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
@@ -40,6 +44,7 @@ const app = createServer({
   sessions,
   docker,
   bridge,
+  tokenPool,
   env: runnerEnv,
   runnerImage: RUNNER_IMAGE,
   network: NETWORK,
@@ -60,6 +65,7 @@ setInterval(() => {
         bridge.sendShutdown(session.id);
         docker.kill(session.id);
         sessions.updateStatus(session.id, "stopped");
+        tokenPool.release(session.id);
       }
     }
   }
@@ -86,4 +92,5 @@ serve({ fetch: app.fetch, port: PORT }, (info) => {
   console.log(`Docker network: ${NETWORK}`);
   console.log(`Runner WS URL: ${ORCHESTRATOR_WS_URL}`);
   console.log(`Idle timeout: ${IDLE_TIMEOUT_MS / 1000}s`);
+  console.log(`OAuth token pool: ${tokenPool.size} token(s)`);
 });
