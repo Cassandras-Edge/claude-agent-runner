@@ -1,11 +1,21 @@
 FROM node:22-alpine AS builder
 
 WORKDIR /app
-COPY package.json ./
-RUN npm install
-COPY tsconfig.json ./
-COPY src/ ./src/
-RUN npm run build
+
+# Copy root workspace config and shared package
+COPY package.json package-lock.json* ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/runner/package.json packages/runner/
+
+RUN npm ci --workspace=packages/shared --workspace=packages/runner
+
+# Build shared first, then runner
+COPY packages/shared/ packages/shared/
+RUN npm run build --workspace=packages/shared
+
+COPY packages/runner/tsconfig.json packages/runner/
+COPY packages/runner/src/ packages/runner/src/
+RUN npm run build --workspace=packages/runner
 
 FROM node:22-alpine
 
@@ -18,12 +28,23 @@ RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
 RUN addgroup -S runner && adduser -S runner -G runner
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install --omit=dev && npm cache clean --force
-COPY --from=builder /app/dist ./dist
+# Install production deps only
+COPY package.json package-lock.json* ./
+COPY packages/shared/package.json packages/shared/
+COPY packages/runner/package.json packages/runner/
+
+RUN npm ci --workspace=packages/shared --workspace=packages/runner --omit=dev && npm cache clean --force
+
+COPY --from=builder /app/packages/shared/dist packages/shared/dist
+COPY --from=builder /app/packages/runner/dist packages/runner/dist
 
 # Workspace directory where repos get cloned or dirs get mounted
 RUN mkdir -p /workspace && chown runner:runner /workspace
 
+# Claude Code expects these directories/files to exist
+RUN mkdir -p /home/runner/.claude/debug /home/runner/.claude/plugins && \
+    chown -R runner:runner /home/runner/.claude
+RUN mkdir -p /etc/claude-code && echo '{}' > /etc/claude-code/managed-settings.json
+
 USER runner
-CMD ["node", "dist/index.js"]
+CMD ["node", "packages/runner/dist/index.js"]
