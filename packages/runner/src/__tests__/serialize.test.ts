@@ -3,10 +3,12 @@ import { serializeEvent } from "../serialize.js";
 
 describe("serializeEvent", () => {
   describe("assistant events", () => {
-    it("extracts text content from assistant messages", () => {
+    it("flattens text content blocks into array", () => {
       const event = {
         type: "assistant",
         uuid: "abc-123",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
         message: {
           content: [
             { type: "text", text: "Hello " },
@@ -17,153 +19,172 @@ describe("serializeEvent", () => {
 
       expect(serializeEvent(event)).toEqual({
         type: "assistant",
-        content: "Hello world",
         uuid: "abc-123",
+        session_id: "sess-1",
+        parent_tool_use_id: null,
+        content: [
+          { type: "text", text: "Hello " },
+          { type: "text", text: "world" },
+        ],
       });
     });
 
-    it("filters out non-text content blocks", () => {
+    it("flattens tool_use blocks with id, name, and input", () => {
       const event = {
         type: "assistant",
         uuid: "abc",
+        session_id: "s1",
+        parent_tool_use_id: null,
         message: {
           content: [
-            { type: "tool_use", id: "t1", name: "read", input: {} },
-            { type: "text", text: "Result" },
+            { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/foo" } },
+            { type: "text", text: "Reading file" },
           ],
         },
       };
 
       expect(serializeEvent(event)).toEqual({
         type: "assistant",
-        content: "Result",
         uuid: "abc",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        content: [
+          { type: "tool_use", id: "t1", name: "Read", input: { file_path: "/foo" } },
+          { type: "text", text: "Reading file" },
+        ],
       });
     });
 
-    it("returns empty content when message has no content", () => {
-      expect(serializeEvent({ type: "assistant", uuid: "x" })).toEqual({
+    it("flattens thinking blocks", () => {
+      const event = {
         type: "assistant",
-        content: "",
         uuid: "x",
-      });
+        session_id: "s1",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            { type: "thinking", thinking: "Let me think..." },
+            { type: "text", text: "Here's my answer" },
+          ],
+        },
+      };
 
-      expect(serializeEvent({ type: "assistant", uuid: "y", message: {} })).toEqual({
+      const result = serializeEvent(event);
+      expect(result.content).toEqual([
+        { type: "thinking", thinking: "Let me think..." },
+        { type: "text", text: "Here's my answer" },
+      ]);
+    });
+
+    it("returns empty content array when message has no content", () => {
+      expect(serializeEvent({ type: "assistant", uuid: "x" }).content).toEqual([]);
+      expect(serializeEvent({ type: "assistant", uuid: "y", message: {} }).content).toEqual([]);
+    });
+
+    it("passes through unknown block types as-is", () => {
+      const event = {
         type: "assistant",
-        content: "",
-        uuid: "y",
-      });
+        uuid: "z",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        message: {
+          content: [{ type: "unknown_block", data: 42 }],
+        },
+      };
+
+      expect(serializeEvent(event).content).toEqual([
+        { type: "unknown_block", data: 42 },
+      ]);
     });
   });
 
   describe("stream_event events", () => {
-    it("extracts text_delta content", () => {
+    it("unwraps and forwards the inner event", () => {
+      const innerEvent = {
+        type: "content_block_delta",
+        delta: { type: "text_delta", text: "chunk" },
+      };
       const event = {
         type: "stream_event",
-        event: {
-          type: "content_block_delta",
-          delta: { type: "text_delta", text: "chunk" },
-        },
+        uuid: "u1",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        event: innerEvent,
       };
 
       expect(serializeEvent(event)).toEqual({
-        type: "assistant_delta",
-        content: "chunk",
+        type: "stream_event",
+        uuid: "u1",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        event: innerEvent,
       });
     });
 
-    it("extracts thinking_delta content", () => {
-      const event = {
-        type: "stream_event",
-        event: {
-          type: "content_block_delta",
-          delta: { type: "thinking_delta", thinking: "reasoning..." },
-        },
+    it("forwards tool_use content_block_start events", () => {
+      const innerEvent = {
+        type: "content_block_start",
+        content_block: { type: "tool_use", id: "tool-1", name: "Bash" },
       };
 
-      expect(serializeEvent(event)).toEqual({
-        type: "thinking",
-        content: "reasoning...",
+      const result = serializeEvent({
+        type: "stream_event",
+        uuid: "u1",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        event: innerEvent,
       });
+
+      expect(result.event).toEqual(innerEvent);
     });
 
-    it("returns null for other stream events", () => {
-      expect(serializeEvent({
-        type: "stream_event",
-        event: { type: "message_start" },
-      })).toBeNull();
+    it("forwards input_json_delta events", () => {
+      const innerEvent = {
+        type: "content_block_delta",
+        delta: { type: "input_json_delta", partial_json: '{"com' },
+      };
 
-      expect(serializeEvent({
+      const result = serializeEvent({
         type: "stream_event",
-        event: { type: "content_block_delta", delta: { type: "input_json_delta" } },
-      })).toBeNull();
-    });
+        uuid: "u1",
+        session_id: "s1",
+        parent_tool_use_id: null,
+        event: innerEvent,
+      });
 
-    it("returns null when event is undefined", () => {
-      expect(serializeEvent({ type: "stream_event" })).toBeNull();
+      expect(result.event).toEqual(innerEvent);
     });
   });
 
-  describe("user events (tool results)", () => {
-    it("serializes tool_use_result without uuid", () => {
+  describe("passthrough events", () => {
+    it("passes through user events as-is", () => {
       const event = {
         type: "user",
+        uuid: "event-uuid-123",
+        session_id: "s1",
         tool_use_result: {
           tool_use_id: "tool-1",
           output: "file contents here",
         },
       };
 
-      expect(serializeEvent(event)).toEqual({
-        type: "tool_result",
-        tool_use_id: "tool-1",
-        output: "file contents here",
-      });
+      expect(serializeEvent(event)).toEqual(event);
     });
 
-    it("includes uuid when present on the event", () => {
-      const event = {
-        type: "user",
-        uuid: "event-uuid-123",
-        tool_use_result: {
-          tool_use_id: "tool-1",
-          output: "output",
-        },
-      };
-
-      expect(serializeEvent(event)).toEqual({
-        type: "tool_result",
-        tool_use_id: "tool-1",
-        output: "output",
-        uuid: "event-uuid-123",
-      });
-    });
-
-    it("returns null for user events without tool results", () => {
-      expect(serializeEvent({ type: "user" })).toBeNull();
-    });
-  });
-
-  describe("tool_progress events", () => {
-    it("serializes tool progress", () => {
+    it("passes through tool_progress events as-is", () => {
       const event = {
         type: "tool_progress",
         tool_name: "Bash",
         tool_use_id: "tool-1",
         elapsed_time_seconds: 5.2,
+        uuid: "u1",
+        session_id: "s1",
       };
 
-      expect(serializeEvent(event)).toEqual({
-        type: "tool_progress",
-        tool_name: "Bash",
-        tool_use_id: "tool-1",
-        elapsed_time_seconds: 5.2,
-      });
+      expect(serializeEvent(event)).toEqual(event);
     });
-  });
 
-  describe("result events", () => {
-    it("serializes successful results", () => {
+    it("passes through result events as-is", () => {
       const event = {
         type: "result",
         subtype: "success",
@@ -171,73 +192,41 @@ describe("serializeEvent", () => {
         usage: { input_tokens: 100, output_tokens: 50 },
         total_cost_usd: 0.005,
         duration_ms: 3200,
+        uuid: "u1",
+        session_id: "s1",
       };
 
-      const serialized = serializeEvent(event);
-      expect(serialized).toEqual({
-        type: "result",
-        subtype: "success",
-        result: "Task completed",
-        usage: {
-          input_tokens: 100,
-          output_tokens: 50,
-          cost_usd: 0.005,
-          duration_ms: 3200,
-        },
-      });
-      // Success results should NOT have errors key
-      expect(serialized).not.toHaveProperty("errors");
+      expect(serializeEvent(event)).toEqual(event);
     });
 
-    it("serializes error results with errors array", () => {
+    it("passes through system events as-is", () => {
       const event = {
-        type: "result",
-        subtype: "error_during_execution",
-        result: "",
-        errors: ["Something went wrong"],
-        usage: { input_tokens: 10, output_tokens: 5 },
-        total_cost_usd: 0.001,
-        duration_ms: 100,
+        type: "system",
+        subtype: "init",
+        model: "haiku",
+        tools: ["Bash", "Read"],
+        uuid: "u1",
+        session_id: "s1",
       };
 
-      expect(serializeEvent(event)).toEqual({
-        type: "result",
-        subtype: "error_during_execution",
-        result: "",
-        usage: {
-          input_tokens: 10,
-          output_tokens: 5,
-          cost_usd: 0.001,
-          duration_ms: 100,
-        },
-        errors: ["Something went wrong"],
-      });
+      expect(serializeEvent(event)).toEqual(event);
     });
 
-    it("defaults missing usage fields to 0", () => {
+    it("passes through tool_use_summary events as-is", () => {
       const event = {
-        type: "result",
-        subtype: "success",
+        type: "tool_use_summary",
+        summary: "Read file /foo.ts",
+        preceding_tool_use_ids: ["t1"],
+        uuid: "u1",
+        session_id: "s1",
       };
 
-      expect(serializeEvent(event)!.usage).toEqual({
-        input_tokens: 0,
-        output_tokens: 0,
-        cost_usd: 0,
-        duration_ms: 0,
-      });
+      expect(serializeEvent(event)).toEqual(event);
     });
 
-    it("defaults missing result to empty string", () => {
-      const event = { type: "result", subtype: "success" };
-      expect(serializeEvent(event)!.result).toBe("");
-    });
-  });
-
-  describe("unknown events", () => {
-    it("returns null for unrecognized event types", () => {
-      expect(serializeEvent({ type: "unknown_type" })).toBeNull();
-      expect(serializeEvent({ type: "system" })).toBeNull();
+    it("passes through unknown event types as-is", () => {
+      const event = { type: "some_future_type", data: 42 };
+      expect(serializeEvent(event)).toEqual(event);
     });
   });
 });
