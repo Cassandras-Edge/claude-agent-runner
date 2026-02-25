@@ -24,6 +24,13 @@ export type {
   OrchestratorCommand,
   OrchestratorMessageCommand,
   OrchestratorShutdownCommand,
+  OrchestratorCompactCommand,
+  OrchestratorContextCommand,
+  ContextOperation,
+  RunnerContextStateMessage,
+  RunnerContextResultMessage,
+  ContextMessage,
+  ContextStats,
   SSEEventType,
 } from "@claude-agent-runner/shared";
 
@@ -52,6 +59,9 @@ export interface Session {
   forkedFrom?: string;
   name?: string;
   pinned: boolean;
+  contextTokens: number;
+  compactCount: number;
+  lastCompactAt?: Date;
   ws?: WebSocket;
   pendingResolve?: (event: RunnerEvent) => void;
 }

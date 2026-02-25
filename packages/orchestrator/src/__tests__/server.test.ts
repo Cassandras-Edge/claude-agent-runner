@@ -154,6 +154,13 @@ describe("Server Routes", () => {
       expect(json.sessions[0].source.type).toBe("workspace");
       expect(json.sessions[0].source.workspace).toBe("/my/project");
     });
+
+    it("uses ephemeral source type when no repo or workspace", async () => {
+      sessions.create("s1", "c1", 0, { model: "haiku" });
+
+      const { json } = await jsonResponse(app, "GET", "/sessions");
+      expect(json.sessions[0].source.type).toBe("ephemeral");
+    });
   });
 
   describe("GET /sessions/:id", () => {
@@ -237,13 +244,6 @@ describe("Server Routes", () => {
   });
 
   describe("POST /sessions", () => {
-    it("rejects requests without repo or workspace", async () => {
-      const { status, json } = await jsonResponse(app, "POST", "/sessions", { message: "hello" });
-      expect(status).toBe(400);
-      expect(json.code).toBe("invalid_request");
-      expect(json.message).toContain("repo or workspace");
-    });
-
     it("rejects invalid JSON body", async () => {
       const res = await app.request("/sessions", {
         method: "POST",

@@ -1,9 +1,16 @@
 import WebSocket from "ws";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
-import type { OrchestratorCommand } from "@claude-agent-runner/shared";
+import type { OrchestratorCommand, ContextOperation } from "@claude-agent-runner/shared";
+import {
+  readSessionChain,
+  removeMessage,
+  injectMessage,
+  truncateToLastN,
+  getContextStats,
+} from "./context.js";
 import { serializeEvent } from "./serialize.js";
 import { createStderrRingBuffer, buildZeroEventError } from "./helpers.js";
 import { runWithLogContext, logger } from "./logger.js";
@@ -34,6 +41,7 @@ const FORK_FROM = process.env.RUNNER_FORK_FROM;
 const FORK_AT = process.env.RUNNER_FORK_AT;
 const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
 const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_MS || "90000", 10);
+const COMPACT_THRESHOLD_PCT = parseInt(process.env.RUNNER_COMPACT_THRESHOLD_PCT || "20", 10);
 const WORKSPACE = "/workspace";
 
 if (!ORCHESTRATOR_URL) {
@@ -83,7 +91,7 @@ function cloneRepo(): void {
   }
 }
 
-function buildClaudeChildEnv(): Record<string, string> {
+function buildClaudeChildEnv(forceCompact = false): Record<string, string> {
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (!oauthToken) {
     logger.error("runner.config", "missing_oauth_token", { session_id: SESSION_ID });
@@ -98,32 +106,66 @@ function buildClaudeChildEnv(): Record<string, string> {
     SHELL: "/bin/bash",
     LANG: "C.UTF-8",
     TERM: "dumb",
+    // Auto-compact threshold: 1% forces immediate compact, otherwise use configured %
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: forceCompact ? "1" : String(COMPACT_THRESHOLD_PCT),
   };
+}
+
+function getJsonlPath(): string {
+  if (!sessionId) throw new Error("SDK session ID not yet established");
+  return `/home/runner/.claude/projects/-workspace/${sessionId}.jsonl`;
 }
 
 // --- Agent runner ---
 
 let sessionId: string | undefined;
 let setupCompleted = false;
+let isBusy = false;
+let forceCompactOnNextQuery = false;
+let pendingCompactInstructions: string | undefined = undefined;
+
+// Active query handle — allows external abort for steer
+let activeResponse: ReturnType<typeof query> | null = null;
+
+// Pending steer: set by `steer` command, consumed by message handler after abort
+let pendingSteer: {
+  message: string;
+  model?: string;
+  maxTurns?: number;
+  requestId?: string;
+  traceId?: string;
+  compact?: boolean;
+  compactInstructions?: string;
+  operations?: ContextOperation[];
+} | null = null;
 
 async function runAgent(
   ws: WebSocket,
   message: string,
-  overrides?: { model?: string; maxTurns?: number; requestId?: string; traceId?: string },
+  overrides?: {
+    model?: string;
+    maxTurns?: number;
+    requestId?: string;
+    traceId?: string;
+    forceCompact?: boolean;
+    compactInstructionsOverride?: string;
+  },
 ): Promise<void> {
   const model = overrides?.model || MODEL;
   const maxTurns = overrides?.maxTurns ?? MAX_TURNS;
   const requestId = overrides?.requestId;
   const traceId = overrides?.traceId;
-  const childEnv = buildClaudeChildEnv();
+  const forceCompact = overrides?.forceCompact ?? false;
+  const childEnv = buildClaudeChildEnv(forceCompact);
   const stderrRing = createStderrRingBuffer(200);
 
+  const effectiveCompactInstructions = overrides?.compactInstructionsOverride ?? COMPACT_INSTRUCTIONS;
   const hooks: Record<string, any[]> = {};
-  if (COMPACT_INSTRUCTIONS) {
+  if (effectiveCompactInstructions) {
     hooks.PreCompact = [{
       hooks: [async () => ({
         continue: true,
-        systemMessage: COMPACT_INSTRUCTIONS,
+        systemMessage: effectiveCompactInstructions,
       })],
     }];
   }
@@ -142,6 +184,7 @@ async function runAgent(
   const response = query({
     prompt: message,
     options: {
+
       model,
       ...(SYSTEM_PROMPT ? { systemPrompt: SYSTEM_PROMPT } : {}),
       ...(APPEND_SYSTEM_PROMPT ? { appendSystemPrompt: APPEND_SYSTEM_PROMPT } : {}),
@@ -168,6 +211,7 @@ async function runAgent(
       },
     },
   });
+  activeResponse = response;
 
   logger.debug("runner.agent", "query_invoked", {
     session_id: SESSION_ID,
@@ -235,6 +279,34 @@ async function runAgent(
           event_subtype: event.subtype,
         });
 
+        // Track context window size from result events
+        if (event.type === "result" && event.modelUsage && ws.readyState === WebSocket.OPEN) {
+          const modelEntries = Object.values(event.modelUsage as Record<string, any>);
+          const contextWindow = modelEntries[0]?.contextWindow ?? 0;
+          if (contextWindow > 0) {
+            ws.send(JSON.stringify({
+              type: "context_state",
+              session_id: SESSION_ID,
+              context_tokens: contextWindow,
+              compacted: forceCompact,
+              request_id: requestId,
+              trace_id: traceId,
+            }));
+          }
+        }
+
+        // Detect auto-compact boundary events
+        if (event.type === "system" && event.subtype === "compact_boundary" && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_state",
+            session_id: SESSION_ID,
+            context_tokens: event.compact_metadata?.pre_tokens ?? 0,
+            compacted: true,
+            request_id: requestId,
+            trace_id: traceId,
+          }));
+        }
+
         // Stop on result
         if (event.type === "result") {
           logger.info("runner.agent", "result_received", {
@@ -285,8 +357,28 @@ async function runAgent(
     });
   } finally {
     clearTimeout(firstEventTimer);
+    activeResponse = null;
     response.close();
     logger.debug("runner.agent", "query_closed", { session_id: SESSION_ID });
+  }
+}
+
+/** Execute a single JSONL context operation. Throws on error. */
+function executeContextOp(op: ContextOperation): any {
+  const path = getJsonlPath();
+  switch (op.op) {
+    case "get_context":
+      return readSessionChain(path);
+    case "get_stats":
+      return getContextStats(path);
+    case "remove_message":
+      removeMessage(path, op.uuid);
+      return undefined;
+    case "inject_message":
+      return { injected_uuid: injectMessage(path, op.content, op.role, op.after_uuid) };
+    case "truncate":
+      truncateToLastN(path, op.keep_last_n);
+      return undefined;
   }
 }
 
@@ -307,8 +399,10 @@ function connect(): void {
           cloneRepo();
         }
 
+        // Ensure workspace dir exists (it's pre-created by the Dockerfile,
+        // but create it just in case for ephemeral sessions with no repo/workspace).
         if (!existsSync(WORKSPACE)) {
-          throw new Error(`Workspace not found at ${WORKSPACE}`);
+          mkdirSync(WORKSPACE, { recursive: true });
         }
 
         setupCompleted = true;
@@ -344,6 +438,7 @@ function connect(): void {
           request_id: requestId,
           trace_id: traceId,
         });
+        isBusy = true;
         ws.send(JSON.stringify({
           type: "status",
           session_id: SESSION_ID,
@@ -352,38 +447,255 @@ function connect(): void {
           trace_id: traceId,
         }));
 
-        try {
-          logger.debug("runner.ws", "run_agent_starting", { session_id: SESSION_ID });
-          await runAgent(ws, msg.message, { model: msg.model, maxTurns: msg.maxTurns, requestId, traceId });
-          logger.debug("runner.ws", "run_agent_completed", { session_id: SESSION_ID });
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err);
-          logger.error("runner.ws", "agent_execution_failed", { session_id: SESSION_ID, error: errorMsg });
+        // Consume pending compact flags
+        let useForceCompact = forceCompactOnNextQuery;
+        let useCompactInstructions = pendingCompactInstructions;
+        forceCompactOnNextQuery = false;
+        pendingCompactInstructions = undefined;
+
+        // Current query params — may be replaced by steer
+        let currentMessage = msg.message;
+        let currentModel = msg.model;
+        let currentMaxTurns = msg.maxTurns;
+        let currentRequestId = requestId;
+        let currentTraceId = traceId;
+
+        // Loop: run query, then check for pending steer (abort → edit → resume)
+        while (true) {
+          try {
+            logger.debug("runner.ws", "run_agent_starting", { session_id: SESSION_ID, request_id: currentRequestId });
+            await runAgent(ws, currentMessage, {
+              model: currentModel,
+              maxTurns: currentMaxTurns,
+              requestId: currentRequestId,
+              traceId: currentTraceId,
+              forceCompact: useForceCompact,
+              compactInstructionsOverride: useCompactInstructions,
+            });
+            logger.debug("runner.ws", "run_agent_completed", { session_id: SESSION_ID, request_id: currentRequestId });
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            // Only send error event if this wasn't a steer-initiated abort
+            if (!pendingSteer) {
+              logger.error("runner.ws", "agent_execution_failed", { session_id: SESSION_ID, error: errorMsg });
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: "event",
+                  session_id: SESSION_ID,
+                  request_id: currentRequestId,
+                  trace_id: currentTraceId,
+                  event: {
+                    type: "result",
+                    subtype: "error_during_execution",
+                    result: "",
+                    errors: [errorMsg],
+                    usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 },
+                  },
+                }));
+              }
+            } else {
+              logger.info("runner.ws", "query_aborted_for_steer", { session_id: SESSION_ID, request_id: currentRequestId });
+            }
+          }
+
+          // Check for pending steer: if set, execute operations and loop with new query
+          if (!pendingSteer) break;
+
+          const steer = pendingSteer;
+          pendingSteer = null;
+
+          logger.info("runner.ws", "steer_executing", {
+            session_id: SESSION_ID,
+            request_id: steer.requestId,
+            operations_count: steer.operations?.length ?? 0,
+            has_compact: Boolean(steer.compact),
+          });
+
+          // Execute JSONL operations before resuming
+          if (steer.operations && steer.operations.length > 0 && sessionId) {
+            for (const op of steer.operations) {
+              try {
+                executeContextOp(op);
+                logger.debug("runner.ws", "steer_op_executed", { session_id: SESSION_ID, op: op.op });
+              } catch (opErr) {
+                const opErrMsg = opErr instanceof Error ? opErr.message : String(opErr);
+                logger.error("runner.ws", "steer_op_failed", { session_id: SESSION_ID, op: op.op, error: opErrMsg });
+              }
+            }
+          }
+
+          // Notify orchestrator of steer
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
-              type: "event",
+              type: "status",
               session_id: SESSION_ID,
-              request_id: requestId,
-              trace_id: traceId,
-              event: {
-                type: "result",
-                subtype: "error_during_execution",
-                result: "",
-                errors: [errorMsg],
-                usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 },
-              },
+              status: "busy",
+              request_id: steer.requestId,
+              trace_id: steer.traceId,
             }));
           }
+
+          // Set up next iteration with steer params
+          currentMessage = steer.message;
+          currentModel = steer.model;
+          currentMaxTurns = steer.maxTurns;
+          currentRequestId = steer.requestId;
+          currentTraceId = steer.traceId;
+          useForceCompact = steer.compact ?? false;
+          useCompactInstructions = steer.compactInstructions;
         }
 
+        isBusy = false;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "status",
+            session_id: SESSION_ID,
+            status: "ready",
+            request_id: currentRequestId,
+            trace_id: currentTraceId,
+          }));
+        }
+      });
+    }
+
+    if (msg.type === "compact") {
+      forceCompactOnNextQuery = true;
+      pendingCompactInstructions = (msg as any).custom_instructions;
+      logger.info("runner.ws", "compact_scheduled", {
+        session_id: SESSION_ID,
+        has_custom_instructions: Boolean(pendingCompactInstructions),
+        request_id: (msg as any).request_id,
+      });
+      if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "status",
           session_id: SESSION_ID,
           status: "ready",
-          request_id: requestId,
-          trace_id: traceId,
+          request_id: (msg as any).request_id,
         }));
+      }
+      return;
+    }
+
+    if (msg.type === "steer") {
+      const steerMsg = msg as any;
+      const steerRequestId = steerMsg.request_id;
+      const steerTraceId = steerMsg.trace_id;
+
+      logger.info("runner.ws", "steer_received", {
+        session_id: SESSION_ID,
+        is_busy: isBusy,
+        has_active_response: Boolean(activeResponse),
+        message_preview: steerMsg.message?.slice(0, 120),
+        operations_count: steerMsg.operations?.length ?? 0,
+        request_id: steerRequestId,
       });
+
+      if (isBusy && activeResponse) {
+        // Mid-query steer: set pending and abort the running query
+        pendingSteer = {
+          message: steerMsg.message,
+          model: steerMsg.model,
+          maxTurns: steerMsg.maxTurns,
+          requestId: steerRequestId,
+          traceId: steerTraceId,
+          compact: steerMsg.compact,
+          compactInstructions: steerMsg.compact_instructions,
+          operations: steerMsg.operations,
+        };
+        activeResponse.close(); // triggers abort → message handler catches → consumes pendingSteer
+      } else {
+        // Not busy: execute operations and send as a normal message
+        return runWithLogContext({ sessionId: SESSION_ID, requestId: steerRequestId, traceId: steerTraceId }, async () => {
+          isBusy = true;
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "busy", request_id: steerRequestId, trace_id: steerTraceId }));
+
+          // Execute JSONL operations
+          if (steerMsg.operations && steerMsg.operations.length > 0 && sessionId) {
+            for (const op of steerMsg.operations as ContextOperation[]) {
+              try {
+                executeContextOp(op);
+              } catch (opErr) {
+                const opErrMsg = opErr instanceof Error ? opErr.message : String(opErr);
+                logger.error("runner.ws", "steer_idle_op_failed", { session_id: SESSION_ID, op: op.op, error: opErrMsg });
+              }
+            }
+          }
+
+          try {
+            await runAgent(ws, steerMsg.message, {
+              model: steerMsg.model,
+              maxTurns: steerMsg.maxTurns,
+              requestId: steerRequestId,
+              traceId: steerTraceId,
+              forceCompact: steerMsg.compact ?? false,
+              compactInstructionsOverride: steerMsg.compact_instructions,
+            });
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            logger.error("runner.ws", "steer_idle_agent_failed", { session_id: SESSION_ID, error: errorMsg });
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "event", session_id: SESSION_ID, request_id: steerRequestId, trace_id: steerTraceId,
+                event: { type: "result", subtype: "error_during_execution", result: "", errors: [errorMsg], usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 } },
+              }));
+            }
+          }
+
+          isBusy = false;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready", request_id: steerRequestId, trace_id: steerTraceId }));
+          }
+        });
+      }
+      return;
+    }
+
+    if (msg.type === "context") {
+      const ctxMsg = msg as any;
+      const requestId = ctxMsg.request_id;
+
+      if (isBusy) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_result",
+            session_id: SESSION_ID,
+            success: false,
+            error: "Session is busy",
+            request_id: requestId,
+          }));
+        }
+        return;
+      }
+
+      try {
+        const op: ContextOperation = ctxMsg.operation;
+        const resultData = executeContextOp(op);
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_result",
+            session_id: SESSION_ID,
+            success: true,
+            data: resultData,
+            request_id: requestId,
+            trace_id: ctxMsg.trace_id,
+          }));
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        logger.error("runner.ws", "context_operation_failed", { session_id: SESSION_ID, error: errorMsg });
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_result",
+            session_id: SESSION_ID,
+            success: false,
+            error: errorMsg,
+            request_id: requestId,
+          }));
+        }
+      }
+      return;
     }
 
     if (msg.type === "shutdown") {

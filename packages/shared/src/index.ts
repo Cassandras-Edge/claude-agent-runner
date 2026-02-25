@@ -99,6 +99,26 @@ export interface SessionDetail extends SessionInfo {
   total_usage: Omit<Usage, "duration_ms">;
   error?: string;
   container_id?: string;
+  context_tokens?: number;
+  compact_count?: number;
+  last_compact_at?: string;
+}
+
+// --- Context Types ---
+
+export interface ContextMessage {
+  uuid: string;
+  parentUuid: string | null;
+  type: "user" | "assistant" | "system";
+  content: any;
+  timestamp?: string;
+}
+
+export interface ContextStats {
+  message_count: number;
+  turn_count: number;
+  type_breakdown: Record<string, number>;
+  estimated_tokens: number;
 }
 
 // --- Runner WS Protocol ---
@@ -138,7 +158,28 @@ export interface RunnerSessionInitMessage extends WsCorrelation {
   sdk_session_id: string;
 }
 
-export type RunnerMessage = RunnerStatusMessage | RunnerEventMessage | RunnerErrorMessage | RunnerSessionInitMessage;
+export interface RunnerContextStateMessage extends WsCorrelation {
+  type: "context_state";
+  session_id: string;
+  context_tokens: number;
+  compacted?: boolean;
+}
+
+export interface RunnerContextResultMessage extends WsCorrelation {
+  type: "context_result";
+  session_id: string;
+  success: boolean;
+  data?: ContextMessage[] | ContextStats | { injected_uuid: string };
+  error?: string;
+}
+
+export type RunnerMessage =
+  | RunnerStatusMessage
+  | RunnerEventMessage
+  | RunnerErrorMessage
+  | RunnerSessionInitMessage
+  | RunnerContextStateMessage
+  | RunnerContextResultMessage;
 
 /** Orchestrator → Runner: send a message to the agent */
 export interface OrchestratorMessageCommand extends WsCorrelation {
@@ -153,7 +194,48 @@ export interface OrchestratorShutdownCommand {
   type: "shutdown";
 }
 
-export type OrchestratorCommand = OrchestratorMessageCommand | OrchestratorShutdownCommand;
+/** Orchestrator → Runner: trigger compaction on next query */
+export interface OrchestratorCompactCommand extends WsCorrelation {
+  type: "compact";
+  custom_instructions?: string;
+}
+
+/** Orchestrator → Runner: JSONL context manipulation */
+export type ContextOperation =
+  | { op: "get_context" }
+  | { op: "remove_message"; uuid: string }
+  | { op: "inject_message"; content: string; role: "user" | "system"; after_uuid?: string }
+  | { op: "truncate"; keep_last_n: number }
+  | { op: "get_stats" };
+
+export interface OrchestratorContextCommand extends WsCorrelation {
+  type: "context";
+  operation: ContextOperation;
+}
+
+/** Orchestrator → Runner: abort current query, optionally edit JSONL, resume with a new message */
+export interface OrchestratorSteerCommand extends WsCorrelation {
+  type: "steer";
+  /** Message to send as the next user turn after aborting */
+  message: string;
+  /** Model override for the resumed query */
+  model?: string;
+  /** Max turns for the resumed query */
+  maxTurns?: number;
+  /** If true, force compaction on the resume query */
+  compact?: boolean;
+  /** Optional custom compact instructions for the resume */
+  compact_instructions?: string;
+  /** Optional JSONL operations to execute before resuming */
+  operations?: ContextOperation[];
+}
+
+export type OrchestratorCommand =
+  | OrchestratorMessageCommand
+  | OrchestratorShutdownCommand
+  | OrchestratorCompactCommand
+  | OrchestratorContextCommand
+  | OrchestratorSteerCommand;
 
 // --- SSE Event Types ---
 

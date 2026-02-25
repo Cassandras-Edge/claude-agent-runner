@@ -355,7 +355,7 @@ components:
       properties:
         type:
           type: string
-          enum: [repo, workspace]
+          enum: [repo, workspace, ephemeral]
         repo:
           type: string
         branch:

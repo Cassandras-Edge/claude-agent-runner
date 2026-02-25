@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
 import type { SessionManager } from "./sessions.js";
-import type { RunnerMessage } from "./types.js";
+import type { RunnerMessage, ContextOperation, RunnerContextResultMessage } from "./types.js";
 import { EventEmitter } from "events";
 import { logger } from "./logger.js";
 
@@ -85,6 +85,28 @@ export class WsBridge extends EventEmitter {
             this.emit(`error:${sessionId}`, msg.code, msg.message);
             break;
 
+          case "context_state":
+            logger.debug("orchestrator.ws_bridge", "runner_context_state", {
+              session_id: sessionId,
+              context_tokens: (msg as any).context_tokens,
+              compacted: (msg as any).compacted,
+            });
+            this.sessions.updateContextTokens(sessionId, (msg as any).context_tokens);
+            if ((msg as any).compacted) {
+              this.sessions.incrementCompactCount(sessionId);
+            }
+            this.emit(`context_state:${sessionId}`, (msg as any).context_tokens, (msg as any).compacted);
+            break;
+
+          case "context_result":
+            logger.debug("orchestrator.ws_bridge", "runner_context_result", {
+              session_id: sessionId,
+              success: (msg as any).success,
+              request_id: (msg as any).request_id,
+            });
+            this.emit(`context_result:${sessionId}:${(msg as any).request_id}`, msg);
+            break;
+
           default:
             logger.warn("orchestrator.ws_bridge", "unhandled_runner_message_type", {
               session_id: sessionId,
@@ -158,6 +180,101 @@ export class WsBridge extends EventEmitter {
   isConnected(sessionId: string): boolean {
     const ws = this.connections.get(sessionId);
     return !!ws && ws.readyState === WebSocket.OPEN;
+  }
+
+  sendCompact(sessionId: string, customInstructions?: string, requestId?: string): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_compact", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "compact",
+      ...(customInstructions ? { custom_instructions: customInstructions } : {}),
+      request_id: requestId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_compact_command", { session_id: sessionId, request_id: requestId });
+    return true;
+  }
+
+  sendSteer(
+    sessionId: string,
+    message: string,
+    options?: {
+      model?: string;
+      maxTurns?: number;
+      compact?: boolean;
+      compactInstructions?: string;
+      operations?: ContextOperation[];
+      requestId?: string;
+      traceId?: string;
+    },
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_steer", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "steer",
+      message,
+      ...(options?.model ? { model: options.model } : {}),
+      ...(options?.maxTurns ? { maxTurns: options.maxTurns } : {}),
+      ...(options?.compact ? { compact: options.compact } : {}),
+      ...(options?.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
+      ...(options?.operations ? { operations: options.operations } : {}),
+      request_id: options?.requestId,
+      trace_id: options?.traceId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_steer_command", {
+      session_id: sessionId,
+      message_preview: message.slice(0, 120),
+      operations_count: options?.operations?.length ?? 0,
+      request_id: options?.requestId,
+    });
+    return true;
+  }
+
+  sendContextCommand(
+    sessionId: string,
+    operation: ContextOperation,
+    requestId: string,
+    traceId?: string,
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_context", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "context",
+      operation,
+      request_id: requestId,
+      trace_id: traceId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_context_command", { session_id: sessionId, op: operation.op, request_id: requestId });
+    return true;
+  }
+
+  waitForContextResult(
+    sessionId: string,
+    requestId: string,
+    timeoutMs = 30_000,
+  ): Promise<RunnerContextResultMessage> {
+    return new Promise((resolve, reject) => {
+      const eventKey = `context_result:${sessionId}:${requestId}`;
+      const timer = setTimeout(() => {
+        this.removeListener(eventKey, onResult);
+        reject(new Error("Timed out waiting for context operation result"));
+      }, timeoutMs);
+
+      const onResult = (msg: RunnerContextResultMessage) => {
+        clearTimeout(timer);
+        this.removeListener(eventKey, onResult);
+        resolve(msg);
+      };
+      this.on(eventKey, onResult);
+    });
   }
 
   close(): void {

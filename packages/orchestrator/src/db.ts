@@ -49,12 +49,18 @@ export interface SessionRow {
   forked_from: string | null;
   name: string | null;
   pinned: number;
+  context_tokens: number;
+  compact_count: number;
+  last_compact_at: string | null;
 }
 
 // Idempotent migrations for columns added after initial schema
 const MIGRATIONS = [
   "ALTER TABLE sessions ADD COLUMN name TEXT",
   "ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE sessions ADD COLUMN compact_count INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE sessions ADD COLUMN last_compact_at TEXT",
 ];
 
 function runMigrations(db: Database.Database): void {
@@ -101,5 +107,8 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     forkedFrom: row.forked_from ?? undefined,
     name: row.name ?? undefined,
     pinned: row.pinned === 1,
+    contextTokens: row.context_tokens ?? 0,
+    compactCount: row.compact_count ?? 0,
+    lastCompactAt: row.last_compact_at ? new Date(row.last_compact_at) : undefined,
   };
 }

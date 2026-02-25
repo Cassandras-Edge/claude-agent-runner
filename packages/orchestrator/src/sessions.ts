@@ -43,7 +43,7 @@ export class SessionManager {
       session_id: id,
       container_id: containerId,
       model: config.model,
-      source_type: config.repo ? "repo" : "workspace",
+      source_type: config.repo ? "repo" : config.workspace ? "workspace" : "ephemeral",
       pinned: !!config.pinned,
       forked_from: config.forkedFrom,
     });
@@ -117,6 +117,23 @@ export class SessionManager {
         cost_usd = cost_usd + ?
       WHERE id = ?
     `).run(usage.input_tokens, usage.output_tokens, usage.cost_usd, id);
+  }
+
+  updateContextTokens(id: string, tokens: number): void {
+    logger.debug("orchestrator.session", "update_context_tokens", { session_id: id, tokens });
+    this.db.prepare("UPDATE sessions SET context_tokens = ?, last_activity = ? WHERE id = ?")
+      .run(tokens, new Date().toISOString(), id);
+  }
+
+  incrementCompactCount(id: string): void {
+    logger.info("orchestrator.session", "compact_occurred", { session_id: id });
+    this.db.prepare(`
+      UPDATE sessions SET
+        compact_count = compact_count + 1,
+        last_compact_at = ?,
+        last_activity = ?
+      WHERE id = ?
+    `).run(new Date().toISOString(), new Date().toISOString(), id);
   }
 
   remove(id: string): Session | undefined {
