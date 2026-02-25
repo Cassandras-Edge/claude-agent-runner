@@ -1,7 +1,18 @@
-FROM oven/bun:1 AS patcher
+FROM node:22-alpine AS patcher
+
+# Install bun (runs patch-all.js) and Claude Code (source for JS extraction)
+RUN apk add --no-cache bash && \
+    npm install -g bun @anthropic-ai/claude-code@2.1.52 && \
+    npm cache clean --force
+
+# Copy patch files
+COPY claude-patches/lib/ /patches/lib/
+COPY claude-patches/scripts/ /patches/scripts/
+COPY claude-patches/patches/ /patches/patches/
+
+# Patch in JS-only mode (no binary output, no codesign)
 WORKDIR /patches
-COPY claude-patches/ /patches/
-RUN bun run scripts/patch-all.js
+RUN bun run scripts/patch-all.js --js-only
 
 FROM node:22-alpine AS builder
 
@@ -28,7 +39,7 @@ FROM node:22-alpine
 RUN apk add --no-cache git curl bash openssh-client
 
 # Install Claude Code CLI globally (required by agent SDK)
-RUN npm install -g @anthropic-ai/claude-code && npm cache clean --force
+RUN npm install -g @anthropic-ai/claude-code@2.1.52 && npm cache clean --force
 
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
