@@ -1,0 +1,3 @@
+dist/
+*.orig
+.DS_Store

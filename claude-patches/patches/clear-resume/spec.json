@@ -1,0 +1,18 @@
+{
+  "id": "clear-resume",
+  "type": "template",
+  "description": "/clear and /resume commands in stream-json mode (SDK)",
+  "target": "js-only",
+  "anchor": "only prompt commands are supported in streaming mode",
+  "extractors": {
+    "CMD_VAR":      "while\\((\\w+)=(?:await )?\\w+\\(",
+    "PROMPT_VAR":   "let (\\w+)={{CMD_VAR}}\\.value;",
+    "MESSAGES_VAR": "mutableMessages:(\\w+),",
+    "QUEUE_VAR":    "(\\w+)\\.enqueue\\(\\{type:\"system\"",
+    "SESSION_FN":   "session_id:(\\w+)\\(\\)",
+    "UUID_MOD":     "uuid:(\\w+)\\.randomUUID\\(\\)",
+    "LOADER_FN":    "let \\w+=await (\\w+)\\(\\w+\\.sessionId,\\w+\\.jsonlFile"
+  },
+  "codeFile": "patch-code.js.tmpl",
+  "insertAfter": "let {{PROMPT_VAR}}={{CMD_VAR}}.value;"
+}

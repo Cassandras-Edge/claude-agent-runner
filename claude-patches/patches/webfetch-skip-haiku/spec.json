@@ -1,0 +1,8 @@
+{
+  "id": "webfetch-skip-haiku",
+  "type": "replacement",
+  "description": "Skip Haiku summarization in WebFetch — return raw markdown directly",
+  "find": "else C=await ufB(R,$,A.signal,_,J)",
+  "replace": "else C=$",
+  "target": "both"
+}

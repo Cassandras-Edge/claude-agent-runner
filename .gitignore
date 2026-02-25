@@ -9,4 +9,4 @@ coverage/
 *.db
 *.db-wal
 *.db-shm
-claude-patches/
+claude-patches/dist/
