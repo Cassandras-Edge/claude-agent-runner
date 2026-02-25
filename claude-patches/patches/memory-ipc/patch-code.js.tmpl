@@ -1,0 +1,32 @@
+/* === CLAUDIAN PATCH: memory-ipc — Unix socket IPC for live context surgery === */
+if(!globalThis.__memIpcStarted){globalThis.__memIpcStarted=true;
+globalThis.__mm={{MESSAGES_VAR}};
+globalThis.__queue={{QUEUE_VAR}};
+globalThis.__sid={{SESSION_FN}};
+(function(){var _sockPath=typeof process!=="undefined"&&process.env&&process.env.CLAUDE_MEM_SOCKET;
+if(!_sockPath)return;
+var _net;try{_net=require("net")}catch(e){try{_net=require("node:net")}catch(e2){return}}
+var _fs;try{_fs=require("fs")}catch(e){try{_fs=require("node:fs")}catch(e2){return}}
+try{_fs.unlinkSync(_sockPath)}catch(e){}
+var _srv=_net.createServer(function(conn){var _buf="";
+conn.on("data",function(chunk){_buf+=chunk.toString();var lines=_buf.split("\n");_buf=lines.pop()||"";
+for(var i=0;i<lines.length;i++){if(!lines[i].trim())continue;
+try{var req=JSON.parse(lines[i]);var res=_handleCmd(req);conn.write(JSON.stringify(res)+"\n")}
+catch(e){conn.write(JSON.stringify({ok:false,error:String(e)})+"\n")}}});
+conn.on("error",function(){})});
+_srv.listen(_sockPath,function(){try{_fs.chmodSync(_sockPath,0o777)}catch(e){}});
+_srv.on("error",function(){});
+function _handleCmd(req){var cmd=req.cmd;var mm=globalThis.__mm;
+if(cmd==="get_length")return{ok:true,length:mm.length};
+if(cmd==="get_messages"){var s=req.start||0;var e=req.end||mm.length;return{ok:true,messages:mm.slice(s,e)}};
+if(cmd==="get_roles"){var r=[];for(var i=0;i<mm.length;i++)r.push(mm[i].role||mm[i].type||"unknown");return{ok:true,roles:r}};
+if(cmd==="splice"){var start=req.start!=null?req.start:0;var dc=req.deleteCount!=null?req.deleteCount:0;var items=req.items||[];var removed=mm.splice(start,dc,...items);return{ok:true,removed:removed,length:mm.length}};
+if(cmd==="push"){var msgs=req.messages||[];for(var i=0;i<msgs.length;i++)mm.push(msgs[i]);return{ok:true,length:mm.length}};
+if(cmd==="pop"){var count=req.count||1;var removed=[];for(var i=0;i<count&&mm.length>0;i++)removed.push(mm.pop());return{ok:true,removed:removed}};
+if(cmd==="clear"){mm.length=0;return{ok:true,length:0}};
+if(cmd==="set"){if(req.messages){mm.length=0;for(var i=0;i<req.messages.length;i++)mm.push(req.messages[i])}return{ok:true,length:mm.length}};
+if(cmd==="emit"){if(req.event&&globalThis.__queue){globalThis.__queue.enqueue(req.event)}return{ok:true}};
+if(cmd==="session_id"){try{return{ok:true,id:globalThis.__sid()}}catch(e){return{ok:true,id:null}}};
+return{ok:false,error:"unknown command: "+cmd}}
+})()}
+/* === END CLAUDIAN PATCH === */

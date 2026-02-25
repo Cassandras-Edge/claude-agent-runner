@@ -1,0 +1,16 @@
+{
+  "id": "memory-ipc",
+  "type": "template",
+  "description": "Expose mutableMessages + Unix socket IPC server for live context surgery",
+  "target": "js-only",
+  "anchor": "only prompt commands are supported in streaming mode",
+  "extractors": {
+    "CMD_VAR":      "while\\((\\w+)=(?:await )?\\w+\\(",
+    "PROMPT_VAR":   "let (\\w+)={{CMD_VAR}}\\.value;",
+    "MESSAGES_VAR": "mutableMessages:(\\w+),",
+    "QUEUE_VAR":    "(\\w+)\\.enqueue\\(\\{type:\"system\"",
+    "SESSION_FN":   "session_id:(\\w+)\\(\\)"
+  },
+  "codeFile": "patch-code.js.tmpl",
+  "insertAfter": "let {{PROMPT_VAR}}={{CMD_VAR}}.value;"
+}
