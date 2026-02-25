@@ -1,5 +1,10 @@
 import WebSocket from "ws";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  unstable_v2_createSession,
+  unstable_v2_resumeSession,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
@@ -14,6 +19,7 @@ import {
 import { serializeEvent } from "./serialize.js";
 import { createStderrRingBuffer, buildZeroEventError } from "./helpers.js";
 import { runWithLogContext, logger } from "./logger.js";
+import { MemIpcClient } from "./mem-ipc.js";
 
 // --- Config from env ---
 
@@ -44,6 +50,12 @@ const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_M
 const COMPACT_THRESHOLD_PCT = parseInt(process.env.RUNNER_COMPACT_THRESHOLD_PCT || "20", 10);
 const WORKSPACE = "/workspace";
 
+// IPC socket path for live context surgery
+const MEM_SOCKET_PATH = process.env.CLAUDE_MEM_SOCKET || "/tmp/claude-mem.sock";
+
+// Patched CLI executable (set in Docker, fallback to global claude for dev)
+const PATCHED_CLI_PATH = process.env.CLAUDE_PATCHED_CLI || undefined;
+
 if (!ORCHESTRATOR_URL) {
   logger.error("runner.config", "RUNNER_ORCHESTRATOR_URL is required");
   process.exit(1);
@@ -57,6 +69,8 @@ logger.info("runner.config", "runner_startup_config", {
   repo: REPO ? "provided" : "none",
   fork_session: FORK_SESSION,
   branch: BRANCH,
+  ipc_socket: MEM_SOCKET_PATH,
+  patched_cli: PATCHED_CLI_PATH ? "provided" : "default",
 });
 
 // --- Git clone ---
@@ -73,7 +87,6 @@ function cloneRepo(): void {
 
   let cloneUrl = REPO;
   if (GIT_TOKEN && cloneUrl.startsWith("https://")) {
-    // Inject token for private repos: https://x-access-token:TOKEN@github.com/...
     cloneUrl = cloneUrl.replace("https://", `https://x-access-token:${GIT_TOKEN}@`);
   }
 
@@ -91,6 +104,8 @@ function cloneRepo(): void {
   }
 }
 
+// --- Build child env ---
+
 function buildClaudeChildEnv(forceCompact = false): Record<string, string> {
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
   if (!oauthToken) {
@@ -106,28 +121,30 @@ function buildClaudeChildEnv(forceCompact = false): Record<string, string> {
     SHELL: "/bin/bash",
     LANG: "C.UTF-8",
     TERM: "dumb",
-    // Auto-compact threshold: 1% forces immediate compact, otherwise use configured %
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: forceCompact ? "1" : String(COMPACT_THRESHOLD_PCT),
+    CLAUDE_MEM_SOCKET: MEM_SOCKET_PATH,
   };
 }
 
 function getJsonlPath(): string {
-  if (!sessionId) throw new Error("SDK session ID not yet established");
-  return `/home/runner/.claude/projects/-workspace/${sessionId}.jsonl`;
+  if (!sdkSessionId) throw new Error("SDK session ID not yet established");
+  return `/home/runner/.claude/projects/-workspace/${sdkSessionId}.jsonl`;
 }
 
-// --- Agent runner ---
+// --- Session state ---
 
-let sessionId: string | undefined;
+let sdkSessionId: string | undefined;
+let session: SDKSession | null = null;
+let ipc: MemIpcClient | null = null;
 let setupCompleted = false;
 let isBusy = false;
 let forceCompactOnNextQuery = false;
 let pendingCompactInstructions: string | undefined = undefined;
 
-// Active query handle — allows external abort for steer
+// V1 fallback: active query handle for abort (used when V2 session is not available)
 let activeResponse: ReturnType<typeof query> | null = null;
 
-// Pending steer: set by `steer` command, consumed by message handler after abort
+// Pending steer: set by `steer` command, consumed by message handler after interrupt
 let pendingSteer: {
   message: string;
   model?: string;
@@ -139,7 +156,283 @@ let pendingSteer: {
   operations?: ContextOperation[];
 } | null = null;
 
-async function runAgent(
+// --- V2 Session creation ---
+
+function buildSessionOptions(forceCompact = false): SDKSessionOptions & Record<string, any> {
+  const childEnv = buildClaudeChildEnv(forceCompact);
+
+  const effectiveCompactInstructions = COMPACT_INSTRUCTIONS;
+  const hooks: Record<string, any[]> = {};
+  if (effectiveCompactInstructions) {
+    hooks.PreCompact = [{
+      hooks: [async () => ({
+        continue: true,
+        systemMessage: effectiveCompactInstructions,
+      })],
+    }];
+  }
+
+  const opts: SDKSessionOptions & Record<string, any> = {
+    model: MODEL,
+    env: childEnv,
+    ...(ALLOWED_TOOLS.length > 0 ? { allowedTools: ALLOWED_TOOLS } : {}),
+    ...(DISALLOWED_TOOLS.length > 0 ? { disallowedTools: DISALLOWED_TOOLS } : {}),
+    permissionMode: "bypassPermissions" as any,
+    ...(Object.keys(hooks).length > 0 ? { hooks } : {}),
+    ...(PATCHED_CLI_PATH ? { pathToClaudeCodeExecutable: PATCHED_CLI_PATH, executable: "bun" as const } : {}),
+    // Extended options — passed through to CLI args by SDK if supported
+    ...(SYSTEM_PROMPT ? { systemPrompt: SYSTEM_PROMPT } : {}),
+    ...(APPEND_SYSTEM_PROMPT ? { appendSystemPrompt: APPEND_SYSTEM_PROMPT } : {}),
+    ...(MAX_TURNS !== undefined ? { maxTurns: MAX_TURNS } : {}),
+    ...(THINKING ? { maxThinkingTokens: 10000 } : {}),
+    cwd: WORKSPACE,
+    includePartialMessages: true,
+    persistSession: true,
+    enableFileCheckpointing: true,
+    allowDangerouslySkipPermissions: true,
+    settingSources: ["project"],
+    ...(ADDITIONAL_DIRECTORIES.length > 0 ? { additionalDirectories: ADDITIONAL_DIRECTORIES } : {}),
+  };
+
+  return opts;
+}
+
+async function createOrResumeSession(): Promise<SDKSession> {
+  const opts = buildSessionOptions();
+
+  if (FORK_FROM && !sdkSessionId) {
+    // Fork from parent session
+    logger.info("runner.session", "resuming_session_for_fork", {
+      fork_from: FORK_FROM,
+      fork_at: FORK_AT,
+    });
+    return unstable_v2_resumeSession(FORK_FROM, {
+      ...opts,
+      ...(FORK_SESSION ? { forkSession: true } : {}),
+      ...(FORK_AT ? { resumeSessionAt: FORK_AT } : {}),
+    } as any);
+  }
+
+  if (sdkSessionId) {
+    // Resume existing session
+    logger.info("runner.session", "resuming_session", { sdk_session_id: sdkSessionId });
+    return unstable_v2_resumeSession(sdkSessionId, opts as any);
+  }
+
+  // Create new session
+  logger.info("runner.session", "creating_new_session");
+  return unstable_v2_createSession(opts as any);
+}
+
+async function ensureIpcConnected(): Promise<void> {
+  if (ipc?.isConnected) return;
+
+  ipc = new MemIpcClient();
+  try {
+    await ipc.connect(MEM_SOCKET_PATH, 30, 200);
+    logger.info("runner.ipc", "ipc_connected", { socket: MEM_SOCKET_PATH });
+  } catch (err) {
+    logger.warn("runner.ipc", "ipc_connect_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    ipc = null;
+  }
+}
+
+// --- Run turn (V2 session based) ---
+
+async function runTurn(
+  ws: WebSocket,
+  message: string,
+  overrides?: {
+    model?: string;
+    maxTurns?: number;
+    requestId?: string;
+    traceId?: string;
+    forceCompact?: boolean;
+    compactInstructionsOverride?: string;
+  },
+): Promise<void> {
+  const requestId = overrides?.requestId;
+  const traceId = overrides?.traceId;
+
+  logger.info("runner.agent", "turn_start", {
+    session_id: SESSION_ID,
+    request_id: requestId,
+    trace_id: traceId,
+    model: overrides?.model || MODEL,
+    has_session: Boolean(session),
+  });
+
+  // Create or resume V2 session if not yet established
+  if (!session) {
+    try {
+      session = await createOrResumeSession();
+      logger.info("runner.session", "session_created");
+    } catch (err) {
+      logger.error("runner.session", "session_create_failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    }
+  }
+
+  // Send message to the session
+  await session.send(message);
+
+  let eventCount = 0;
+  let firstEventTimeoutTriggered = false;
+  const firstEventTimer = setTimeout(() => {
+    firstEventTimeoutTriggered = true;
+    logger.error("runner.agent", "first_event_timeout", {
+      session_id: SESSION_ID,
+      timeout_ms: FIRST_EVENT_TIMEOUT_MS,
+    });
+    // Close session on timeout — forces stream to end
+    session?.close();
+    session = null;
+  }, FIRST_EVENT_TIMEOUT_MS);
+
+  try {
+    for await (const event of session.stream()) {
+      if (eventCount === 0) {
+        clearTimeout(firstEventTimer);
+      }
+
+      eventCount++;
+
+      // Capture session ID from first message
+      if (!sdkSessionId && "session_id" in event && (event as any).session_id) {
+        sdkSessionId = (event as any).session_id;
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "session_init",
+            session_id: SESSION_ID,
+            sdk_session_id: sdkSessionId,
+            request_id: requestId,
+            trace_id: traceId,
+          }));
+        }
+        logger.info("runner.agent", "session_id_acquired", {
+          runner_session_id: SESSION_ID,
+          sdk_session_id: sdkSessionId,
+          request_id: requestId,
+        });
+
+        // Connect IPC after session init (socket created by patched CLI)
+        ensureIpcConnected().catch(() => {});
+      }
+
+      // Forward event to orchestrator
+      const serialized = serializeEvent(event as any);
+      if (serialized && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "event",
+          session_id: SESSION_ID,
+          event: serialized,
+          request_id: requestId,
+          trace_id: traceId,
+        }));
+      }
+
+      logger.debug("runner.agent", "sdk_event", {
+        session_id: SESSION_ID,
+        event_type: (event as any).type,
+        event_subtype: (event as any).subtype,
+      });
+
+      // Track context window size from result events
+      if ((event as any).type === "result" && (event as any).modelUsage && ws.readyState === WebSocket.OPEN) {
+        const modelEntries = Object.values((event as any).modelUsage as Record<string, any>);
+        const contextWindow = modelEntries[0]?.contextWindow ?? 0;
+        if (contextWindow > 0) {
+          ws.send(JSON.stringify({
+            type: "context_state",
+            session_id: SESSION_ID,
+            context_tokens: contextWindow,
+            compacted: overrides?.forceCompact ?? false,
+            request_id: requestId,
+            trace_id: traceId,
+          }));
+        }
+      }
+
+      // Detect auto-compact boundary events
+      if ((event as any).type === "system" && (event as any).subtype === "compact_boundary" && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "context_state",
+          session_id: SESSION_ID,
+          context_tokens: (event as any).compact_metadata?.pre_tokens ?? 0,
+          compacted: true,
+          request_id: requestId,
+          trace_id: traceId,
+        }));
+      }
+
+      // Stop on result — turn is complete
+      if ((event as any).type === "result") {
+        logger.info("runner.agent", "result_received", {
+          session_id: SESSION_ID,
+          sdk_session_id: sdkSessionId,
+          result_type: (event as any).subtype,
+        });
+        break;
+      }
+
+      // Stop if pendingSteer was set (mid-turn interrupt)
+      if (pendingSteer) {
+        logger.info("runner.agent", "stream_interrupted_for_steer", {
+          session_id: SESSION_ID,
+        });
+        break;
+      }
+    }
+  } catch (iterErr) {
+    if (firstEventTimeoutTriggered && eventCount === 0) {
+      throw new Error(buildZeroEventError(
+        "Timed out waiting for first SDK event",
+        overrides?.model || MODEL,
+        overrides?.maxTurns ?? MAX_TURNS,
+        WORKSPACE,
+        [],
+        [],
+      ));
+    }
+    logger.error("runner.agent", "sdk_iteration_error", {
+      session_id: SESSION_ID,
+      error: iterErr instanceof Error ? (iterErr as Error).message : String(iterErr),
+    });
+    throw iterErr;
+  } finally {
+    clearTimeout(firstEventTimer);
+  }
+
+  if (eventCount === 0) {
+    const reason = firstEventTimeoutTriggered
+      ? "Timed out waiting for first SDK event"
+      : "SDK query completed with zero events";
+    throw new Error(buildZeroEventError(
+      reason,
+      overrides?.model || MODEL,
+      overrides?.maxTurns ?? MAX_TURNS,
+      WORKSPACE,
+      [],
+      [],
+    ));
+  }
+
+  logger.info("runner.agent", "turn_complete", {
+    session_id: SESSION_ID,
+    sdk_session_id: sdkSessionId,
+    event_count: eventCount,
+  });
+}
+
+// --- V1 fallback agent runner (used when V2 is not available) ---
+
+/** @internal V1 fallback agent runner — used when V2 session is unavailable */
+export async function runAgentV1(
   ws: WebSocket,
   message: string,
   overrides?: {
@@ -170,21 +463,15 @@ async function runAgent(
     }];
   }
 
-  logger.info("runner.agent", "query_start", {
+  logger.info("runner.agent", "query_start_v1", {
     session_id: SESSION_ID,
     request_id: requestId,
-    trace_id: traceId,
     model,
-    max_turns: maxTurns,
-    has_append_prompt: Boolean(APPEND_SYSTEM_PROMPT),
-    has_system_prompt: Boolean(SYSTEM_PROMPT),
-    has_fork_from: Boolean(FORK_FROM),
   });
 
   const response = query({
     prompt: message,
     options: {
-
       model,
       ...(SYSTEM_PROMPT ? { systemPrompt: SYSTEM_PROMPT } : {}),
       ...(APPEND_SYSTEM_PROMPT ? { appendSystemPrompt: APPEND_SYSTEM_PROMPT } : {}),
@@ -198,12 +485,13 @@ async function runAgent(
       includePartialMessages: true,
       persistSession: true,
       enableFileCheckpointing: true,
-      ...((sessionId || FORK_FROM) ? { resume: sessionId || FORK_FROM } : {}),
-      ...(FORK_SESSION && !sessionId ? { forkSession: true } : {}),
-      ...(FORK_AT && !sessionId ? { resumeSessionAt: FORK_AT } : {}),
+      ...((sdkSessionId || FORK_FROM) ? { resume: sdkSessionId || FORK_FROM } : {}),
+      ...(FORK_SESSION && !sdkSessionId ? { forkSession: true } : {}),
+      ...(FORK_AT && !sdkSessionId ? { resumeSessionAt: FORK_AT } : {}),
       settingSources: ["project"],
       ...(ADDITIONAL_DIRECTORIES.length > 0 ? { additionalDirectories: ADDITIONAL_DIRECTORIES } : {}),
       ...(Object.keys(hooks).length > 0 ? { hooks } : {}),
+      ...(PATCHED_CLI_PATH ? { pathToClaudeCodeExecutable: PATCHED_CLI_PATH } : {}),
       env: childEnv,
       stderr: (data: string) => {
         stderrRing.push(data);
@@ -212,13 +500,6 @@ async function runAgent(
     },
   });
   activeResponse = response;
-
-  logger.debug("runner.agent", "query_invoked", {
-    session_id: SESSION_ID,
-    cwd: WORKSPACE,
-    model,
-    max_turns: maxTurns,
-  });
 
   let eventCount = 0;
   let firstEventTimeoutTriggered = false;
@@ -237,30 +518,28 @@ async function runAgent(
         if (eventCount === 0) {
           clearTimeout(firstEventTimer);
         }
-
         eventCount++;
 
-        // Capture session ID from first message and report back to orchestrator
-        if (!sessionId && "session_id" in event && event.session_id) {
-          sessionId = event.session_id;
+        if (!sdkSessionId && "session_id" in event && event.session_id) {
+          sdkSessionId = event.session_id;
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
               type: "session_init",
               session_id: SESSION_ID,
-              sdk_session_id: sessionId,
+              sdk_session_id: sdkSessionId,
               request_id: requestId,
               trace_id: traceId,
             }));
           }
           logger.info("runner.agent", "session_id_acquired", {
             runner_session_id: SESSION_ID,
-            sdk_session_id: sessionId,
-            request_id: requestId,
-            trace_id: traceId,
+            sdk_session_id: sdkSessionId,
           });
+
+          // Connect IPC after session init
+          ensureIpcConnected().catch(() => {});
         }
 
-        // Forward event to orchestrator
         const serialized = serializeEvent(event);
         if (serialized && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
@@ -272,14 +551,6 @@ async function runAgent(
           }));
         }
 
-        logger.debug("runner.agent", "sdk_event", {
-          session_id: SESSION_ID,
-          sdk_session_id: sessionId,
-          event_type: event.type,
-          event_subtype: event.subtype,
-        });
-
-        // Track context window size from result events
         if (event.type === "result" && event.modelUsage && ws.readyState === WebSocket.OPEN) {
           const modelEntries = Object.values(event.modelUsage as Record<string, any>);
           const contextWindow = modelEntries[0]?.contextWindow ?? 0;
@@ -295,7 +566,6 @@ async function runAgent(
           }
         }
 
-        // Detect auto-compact boundary events
         if (event.type === "system" && event.subtype === "compact_boundary" && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
             type: "context_state",
@@ -307,13 +577,7 @@ async function runAgent(
           }));
         }
 
-        // Stop on result
         if (event.type === "result") {
-          logger.info("runner.agent", "result_received", {
-            session_id: SESSION_ID,
-            sdk_session_id: sessionId,
-            result_type: event.subtype,
-          });
           break;
         }
       }
@@ -328,11 +592,6 @@ async function runAgent(
           stderrRing.tail(80),
         ));
       }
-
-      logger.error("runner.agent", "sdk_iteration_error", {
-        session_id: SESSION_ID,
-        error: iterErr instanceof Error ? iterErr.message : String(iterErr),
-      });
       throw iterErr;
     }
 
@@ -349,22 +608,72 @@ async function runAgent(
         stderrRing.tail(80),
       ));
     }
-
-    logger.info("runner.agent", "total_events", {
-      session_id: SESSION_ID,
-      sdk_session_id: sessionId,
-      event_count: eventCount,
-    });
   } finally {
     clearTimeout(firstEventTimer);
     activeResponse = null;
     response.close();
-    logger.debug("runner.agent", "query_closed", { session_id: SESSION_ID });
   }
 }
 
-/** Execute a single JSONL context operation. Throws on error. */
-function executeContextOp(op: ContextOperation): any {
+// --- IPC-based context operations ---
+
+async function executeContextOpViaIpc(op: ContextOperation): Promise<any> {
+  if (!ipc?.isConnected) {
+    throw new Error("IPC not connected — cannot execute context operation");
+  }
+
+  switch (op.op) {
+    case "get_context":
+      return await ipc.getMessages();
+    case "get_stats": {
+      const length = await ipc.getLength();
+      const roles = await ipc.getRoles();
+      const breakdown: Record<string, number> = {};
+      for (const r of roles) {
+        breakdown[r] = (breakdown[r] || 0) + 1;
+      }
+      return {
+        message_count: length,
+        turn_count: Math.floor(length / 2),
+        type_breakdown: breakdown,
+        estimated_tokens: length * 500, // rough estimate
+      };
+    }
+    case "remove_message": {
+      const messages = await ipc.getMessages();
+      const idx = messages.findIndex((m: any) => m.uuid === op.uuid);
+      if (idx === -1) throw new Error(`Message not found: ${op.uuid}`);
+      await ipc.splice(idx, 1);
+      return undefined;
+    }
+    case "inject_message": {
+      const messages = await ipc.getMessages();
+      const newMsg: any = {
+        role: op.role,
+        content: [{ type: "text", text: op.content }],
+      };
+      if (op.after_uuid) {
+        const afterIdx = messages.findIndex((m: any) => m.uuid === op.after_uuid);
+        if (afterIdx === -1) throw new Error(`Message not found: ${op.after_uuid}`);
+        await ipc.splice(afterIdx + 1, 0, [newMsg]);
+      } else {
+        await ipc.push([newMsg]);
+      }
+      return { injected: true };
+    }
+    case "truncate": {
+      const len = await ipc.getLength();
+      const keepN = op.keep_last_n;
+      if (len > keepN) {
+        await ipc.splice(0, len - keepN);
+      }
+      return undefined;
+    }
+  }
+}
+
+/** Execute a JSONL context operation (fallback when IPC is not available). */
+function executeContextOpJsonl(op: ContextOperation): any {
   const path = getJsonlPath();
   switch (op.op) {
     case "get_context":
@@ -382,6 +691,51 @@ function executeContextOp(op: ContextOperation): any {
   }
 }
 
+/** Execute a context operation, preferring IPC over JSONL. */
+async function executeContextOp(op: ContextOperation): Promise<any> {
+  if (ipc?.isConnected) {
+    return executeContextOpViaIpc(op);
+  }
+  return executeContextOpJsonl(op);
+}
+
+// --- Snapshot emission ---
+
+async function emitSnapshot(
+  ws: WebSocket,
+  trigger: "steer" | "compact" | "turn_complete" | "manual",
+  requestId?: string,
+): Promise<void> {
+  if (!ipc?.isConnected) return;
+
+  try {
+    const messages = await ipc.getMessages();
+    const length = await ipc.getLength();
+    const roles = await ipc.getRoles();
+
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "context_snapshot",
+        session_id: SESSION_ID,
+        trigger,
+        message_count: length,
+        roles,
+        messages,
+        request_id: requestId,
+      }));
+    }
+    logger.debug("runner.snapshot", "snapshot_emitted", {
+      session_id: SESSION_ID,
+      trigger,
+      message_count: length,
+    });
+  } catch (err) {
+    logger.warn("runner.snapshot", "snapshot_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 // --- WebSocket connection to orchestrator ---
 
 function connect(): void {
@@ -391,7 +745,6 @@ function connect(): void {
   ws.on("open", () => {
     logger.info("runner.ws", "connected", { session_id: SESSION_ID });
 
-    // Setup phase: clone repo if needed
     try {
       if (!setupCompleted) {
         if (REPO) {
@@ -399,8 +752,6 @@ function connect(): void {
           cloneRepo();
         }
 
-        // Ensure workspace dir exists (it's pre-created by the Dockerfile,
-        // but create it just in case for ephemeral sessions with no repo/workspace).
         if (!existsSync(WORKSPACE)) {
           mkdirSync(WORKSPACE, { recursive: true });
         }
@@ -447,24 +798,21 @@ function connect(): void {
           trace_id: traceId,
         }));
 
-        // Consume pending compact flags
         let useForceCompact = forceCompactOnNextQuery;
         let useCompactInstructions = pendingCompactInstructions;
         forceCompactOnNextQuery = false;
         pendingCompactInstructions = undefined;
 
-        // Current query params — may be replaced by steer
         let currentMessage = msg.message;
         let currentModel = msg.model;
         let currentMaxTurns = msg.maxTurns;
         let currentRequestId = requestId;
         let currentTraceId = traceId;
 
-        // Loop: run query, then check for pending steer (abort → edit → resume)
+        // Loop: run turn, then check for pending steer
         while (true) {
           try {
-            logger.debug("runner.ws", "run_agent_starting", { session_id: SESSION_ID, request_id: currentRequestId });
-            await runAgent(ws, currentMessage, {
+            await runTurn(ws, currentMessage, {
               model: currentModel,
               maxTurns: currentMaxTurns,
               requestId: currentRequestId,
@@ -472,10 +820,8 @@ function connect(): void {
               forceCompact: useForceCompact,
               compactInstructionsOverride: useCompactInstructions,
             });
-            logger.debug("runner.ws", "run_agent_completed", { session_id: SESSION_ID, request_id: currentRequestId });
           } catch (err) {
             const errorMsg = err instanceof Error ? err.message : String(err);
-            // Only send error event if this wasn't a steer-initiated abort
             if (!pendingSteer) {
               logger.error("runner.ws", "agent_execution_failed", { session_id: SESSION_ID, error: errorMsg });
               if (ws.readyState === WebSocket.OPEN) {
@@ -494,11 +840,11 @@ function connect(): void {
                 }));
               }
             } else {
-              logger.info("runner.ws", "query_aborted_for_steer", { session_id: SESSION_ID, request_id: currentRequestId });
+              logger.info("runner.ws", "turn_interrupted_for_steer", { session_id: SESSION_ID });
             }
           }
 
-          // Check for pending steer: if set, execute operations and loop with new query
+          // Check for pending steer
           if (!pendingSteer) break;
 
           const steer = pendingSteer;
@@ -508,14 +854,13 @@ function connect(): void {
             session_id: SESSION_ID,
             request_id: steer.requestId,
             operations_count: steer.operations?.length ?? 0,
-            has_compact: Boolean(steer.compact),
           });
 
-          // Execute JSONL operations before resuming
-          if (steer.operations && steer.operations.length > 0 && sessionId) {
+          // Execute context operations via IPC
+          if (steer.operations && steer.operations.length > 0) {
             for (const op of steer.operations) {
               try {
-                executeContextOp(op);
+                await executeContextOp(op);
                 logger.debug("runner.ws", "steer_op_executed", { session_id: SESSION_ID, op: op.op });
               } catch (opErr) {
                 const opErrMsg = opErr instanceof Error ? opErr.message : String(opErr);
@@ -524,7 +869,9 @@ function connect(): void {
             }
           }
 
-          // Notify orchestrator of steer
+          // Emit snapshot after steer mutations
+          await emitSnapshot(ws, "steer", steer.requestId);
+
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({
               type: "status",
@@ -535,7 +882,6 @@ function connect(): void {
             }));
           }
 
-          // Set up next iteration with steer params
           currentMessage = steer.message;
           currentModel = steer.model;
           currentMaxTurns = steer.maxTurns;
@@ -585,14 +931,13 @@ function connect(): void {
       logger.info("runner.ws", "steer_received", {
         session_id: SESSION_ID,
         is_busy: isBusy,
-        has_active_response: Boolean(activeResponse),
         message_preview: steerMsg.message?.slice(0, 120),
         operations_count: steerMsg.operations?.length ?? 0,
         request_id: steerRequestId,
       });
 
-      if (isBusy && activeResponse) {
-        // Mid-query steer: set pending and abort the running query
+      if (isBusy) {
+        // Mid-turn steer: set pending — the stream loop will pick it up
         pendingSteer = {
           message: steerMsg.message,
           model: steerMsg.model,
@@ -603,18 +948,22 @@ function connect(): void {
           compactInstructions: steerMsg.compact_instructions,
           operations: steerMsg.operations,
         };
-        activeResponse.close(); // triggers abort → message handler catches → consumes pendingSteer
+        // V1 fallback: close active response to interrupt
+        if (activeResponse) {
+          activeResponse.close();
+        }
+        // V2: the stream loop checks pendingSteer and breaks
       } else {
-        // Not busy: execute operations and send as a normal message
+        // Not busy: execute operations via IPC and send as a normal turn
         return runWithLogContext({ sessionId: SESSION_ID, requestId: steerRequestId, traceId: steerTraceId }, async () => {
           isBusy = true;
           ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "busy", request_id: steerRequestId, trace_id: steerTraceId }));
 
-          // Execute JSONL operations
-          if (steerMsg.operations && steerMsg.operations.length > 0 && sessionId) {
+          // Execute context operations via IPC
+          if (steerMsg.operations && steerMsg.operations.length > 0) {
             for (const op of steerMsg.operations as ContextOperation[]) {
               try {
-                executeContextOp(op);
+                await executeContextOp(op);
               } catch (opErr) {
                 const opErrMsg = opErr instanceof Error ? opErr.message : String(opErr);
                 logger.error("runner.ws", "steer_idle_op_failed", { session_id: SESSION_ID, op: op.op, error: opErrMsg });
@@ -622,8 +971,11 @@ function connect(): void {
             }
           }
 
+          // Emit snapshot after steer mutations
+          await emitSnapshot(ws, "steer", steerRequestId);
+
           try {
-            await runAgent(ws, steerMsg.message, {
+            await runTurn(ws, steerMsg.message, {
               model: steerMsg.model,
               maxTurns: steerMsg.maxTurns,
               requestId: steerRequestId,
@@ -670,7 +1022,7 @@ function connect(): void {
 
       try {
         const op: ContextOperation = ctxMsg.operation;
-        const resultData = executeContextOp(op);
+        const resultData = await executeContextOp(op);
 
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({
@@ -700,6 +1052,9 @@ function connect(): void {
 
     if (msg.type === "shutdown") {
       logger.info("runner.ws", "shutdown_requested", { session_id: SESSION_ID });
+      // Clean up IPC and session
+      ipc?.disconnect();
+      session?.close();
       ws.close();
       process.exit(0);
     }
@@ -707,7 +1062,6 @@ function connect(): void {
 
   ws.on("close", () => {
     logger.warn("runner.ws", "disconnected", { session_id: SESSION_ID, reconnect_delay_ms: 3000 });
-    // Attempt reconnect after 3s
     setTimeout(connect, 3000);
   });
 

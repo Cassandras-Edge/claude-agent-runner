@@ -173,13 +173,23 @@ export interface RunnerContextResultMessage extends WsCorrelation {
   error?: string;
 }
 
+export interface RunnerContextSnapshotMessage extends WsCorrelation {
+  type: "context_snapshot";
+  session_id: string;
+  trigger: "steer" | "compact" | "turn_complete" | "manual";
+  message_count: number;
+  roles: string[];
+  messages: any[];
+}
+
 export type RunnerMessage =
   | RunnerStatusMessage
   | RunnerEventMessage
   | RunnerErrorMessage
   | RunnerSessionInitMessage
   | RunnerContextStateMessage
-  | RunnerContextResultMessage;
+  | RunnerContextResultMessage
+  | RunnerContextSnapshotMessage;
 
 /** Orchestrator → Runner: send a message to the agent */
 export interface OrchestratorMessageCommand extends WsCorrelation {
@@ -236,6 +246,22 @@ export type OrchestratorCommand =
   | OrchestratorCompactCommand
   | OrchestratorContextCommand
   | OrchestratorSteerCommand;
+
+// --- Context Snapshot Types ---
+
+export interface ContextSnapshotSummary {
+  id: number;
+  session_id: string;
+  request_id?: string;
+  trigger: string;
+  message_count: number;
+  roles: string[];
+  created_at: string;
+}
+
+export interface ContextSnapshot extends ContextSnapshotSummary {
+  messages: any[];
+}
 
 // --- SSE Event Types ---
 

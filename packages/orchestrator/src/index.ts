@@ -61,6 +61,7 @@ logger.info("orchestrator.storage", "opened sqlite database", { path: DB_PATH })
 const sessions = new SessionManager(db);
 const docker = new DockerManager();
 const bridge = new WsBridge(sessions, WS_PORT);
+bridge.setDb(db);
 logger.info("orchestrator.bootstrap", "session manager, docker manager, and ws bridge initialized");
 
 // Reconcile persisted sessions against live Docker state on startup.
@@ -104,6 +105,7 @@ const app = createServer({
   docker,
   bridge,
   tokenPool,
+  db,
   env: runnerEnv,
   runnerImage: RUNNER_IMAGE,
   network: NETWORK,

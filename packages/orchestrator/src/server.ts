@@ -18,12 +18,15 @@ import type {
 } from "./types.js";
 import type { TokenPool } from "./token-pool.js";
 import { getLogContext, logger, runWithLogContext } from "./logger.js";
+import type Database from "better-sqlite3";
+import { listSnapshots, getSnapshot } from "./db.js";
 
 interface AppContext {
   sessions: SessionManager;
   docker: DockerManager;
   bridge: WsBridge;
   tokenPool: TokenPool;
+  db: Database.Database;
   env: Record<string, string>;
   runnerImage: string;
   network: string;
@@ -347,6 +350,85 @@ export function createServer(ctx: AppContext): Hono {
     });
 
     return c.json({ session_id: session.id, steered: true, was_busy: session.status === "busy" });
+  });
+
+  // --- Snapshots ---
+
+  app.get("/sessions/:id/snapshots", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+
+    const rows = listSnapshots(ctx.db, session.id);
+    const snapshots = rows.map((r) => ({
+      id: r.id,
+      session_id: r.session_id,
+      request_id: r.request_id ?? undefined,
+      trigger: r.trigger,
+      message_count: r.message_count,
+      roles: r.roles ? JSON.parse(r.roles) : [],
+      created_at: r.created_at,
+    }));
+
+    return c.json({ snapshots });
+  });
+
+  app.get("/sessions/:id/snapshots/:snapId", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+
+    const snapId = parseInt(c.req.param("snapId"), 10);
+    if (isNaN(snapId)) return c.json({ code: "invalid_request", message: "Invalid snapshot ID" } satisfies ErrorResponse, 400 as any);
+
+    const row = getSnapshot(ctx.db, snapId);
+    if (!row || row.session_id !== session.id) {
+      return c.json({ code: "session_not_found", message: "Snapshot not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    return c.json({
+      id: row.id,
+      session_id: row.session_id,
+      request_id: row.request_id ?? undefined,
+      trigger: row.trigger,
+      message_count: row.message_count,
+      roles: row.roles ? JSON.parse(row.roles) : [],
+      messages: JSON.parse(row.messages),
+      created_at: row.created_at,
+    });
+  });
+
+  app.post("/sessions/:id/snapshots", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    if (session.status === "stopped" || session.status === "error") return c.json({ code: "session_stopped", message: "Session has stopped" } satisfies ErrorResponse, 410 as any);
+    if (!ctx.bridge.isConnected(session.id)) return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 503 as any);
+
+    // Request a manual snapshot from the runner via context command
+    const requestId = randomUUID();
+    const sent = ctx.bridge.sendContextCommand(session.id, { op: "get_context" }, requestId);
+    if (!sent) return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 503 as any);
+
+    try {
+      const result = await ctx.bridge.waitForContextResult(session.id, requestId, 30_000);
+      if (!result.success || !result.data) {
+        return c.json({ code: "internal", message: result.error || "Failed to get context" } satisfies ErrorResponse, 500 as any);
+      }
+
+      const messages = result.data as any[];
+      const roles = messages.map((m: any) => m.role || m.type || "unknown");
+      const { insertSnapshot: insertSnap } = await import("./db.js");
+      const snapId = insertSnap(ctx.db, session.id, "manual", messages.length, roles, messages, requestId);
+
+      return c.json({
+        id: snapId,
+        session_id: session.id,
+        trigger: "manual",
+        message_count: messages.length,
+        roles,
+        created_at: new Date().toISOString(),
+      });
+    } catch (err) {
+      return c.json({ code: "timeout", message: "Timed out waiting for context data" } satisfies ErrorResponse, 504 as any);
+    }
   });
 
   // --- Sessions: Rename ---

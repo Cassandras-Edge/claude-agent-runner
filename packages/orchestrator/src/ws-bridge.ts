@@ -1,7 +1,9 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { IncomingMessage } from "http";
 import type { SessionManager } from "./sessions.js";
-import type { RunnerMessage, ContextOperation, RunnerContextResultMessage } from "./types.js";
+import type { RunnerMessage, ContextOperation, RunnerContextResultMessage, RunnerContextSnapshotMessage } from "./types.js";
+import type Database from "better-sqlite3";
+import { insertSnapshot } from "./db.js";
 import { EventEmitter } from "events";
 import { logger } from "./logger.js";
 
@@ -9,6 +11,8 @@ export class WsBridge extends EventEmitter {
   private wss: WebSocketServer;
   private connections = new Map<string, WebSocket>();
   private shuttingDown = false;
+
+  private db: Database.Database | null = null;
 
   constructor(private sessions: SessionManager, port: number) {
     super();
@@ -106,6 +110,35 @@ export class WsBridge extends EventEmitter {
             });
             this.emit(`context_result:${sessionId}:${(msg as any).request_id}`, msg);
             break;
+
+          case "context_snapshot": {
+            const snap = msg as RunnerContextSnapshotMessage;
+            logger.info("orchestrator.ws_bridge", "runner_context_snapshot", {
+              session_id: sessionId,
+              trigger: snap.trigger,
+              message_count: snap.message_count,
+            });
+            if (this.db) {
+              try {
+                insertSnapshot(
+                  this.db,
+                  sessionId,
+                  snap.trigger,
+                  snap.message_count,
+                  snap.roles,
+                  snap.messages,
+                  snap.request_id,
+                );
+              } catch (dbErr) {
+                logger.error("orchestrator.ws_bridge", "snapshot_insert_failed", {
+                  session_id: sessionId,
+                  error: dbErr instanceof Error ? dbErr.message : String(dbErr),
+                });
+              }
+            }
+            this.emit(`context_snapshot:${sessionId}`, snap);
+            break;
+          }
 
           default:
             logger.warn("orchestrator.ws_bridge", "unhandled_runner_message_type", {
@@ -275,6 +308,11 @@ export class WsBridge extends EventEmitter {
       };
       this.on(eventKey, onResult);
     });
+  }
+
+  /** Attach a database reference for persisting snapshots. */
+  setDb(db: Database.Database): void {
+    this.db = db;
   }
 
   close(): void {

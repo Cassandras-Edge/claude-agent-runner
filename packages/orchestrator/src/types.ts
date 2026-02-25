@@ -32,6 +32,9 @@ export type {
   ContextMessage,
   ContextStats,
   SSEEventType,
+  RunnerContextSnapshotMessage,
+  ContextSnapshotSummary,
+  ContextSnapshot,
 } from "@claude-agent-runner/shared";
 
 // --- Internal Session State (orchestrator-only) ---

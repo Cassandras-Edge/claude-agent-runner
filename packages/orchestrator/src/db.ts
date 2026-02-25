@@ -27,6 +27,32 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 `;
 
+const SNAPSHOTS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS context_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  request_id TEXT,
+  trigger TEXT NOT NULL,
+  message_count INTEGER NOT NULL,
+  roles TEXT,
+  messages TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_session ON context_snapshots(session_id);
+`;
+
+export interface SnapshotRow {
+  id: number;
+  session_id: string;
+  request_id: string | null;
+  trigger: string;
+  message_count: number;
+  roles: string | null;
+  messages: string;
+  created_at: string;
+}
+
 export interface SessionRow {
   id: string;
   container_id: string;
@@ -78,8 +104,52 @@ export function openDb(path: string): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  db.exec(SNAPSHOTS_SCHEMA);
   runMigrations(db);
   return db;
+}
+
+export function insertSnapshot(
+  db: Database.Database,
+  sessionId: string,
+  trigger: string,
+  messageCount: number,
+  roles: string[],
+  messages: any[],
+  requestId?: string,
+): number {
+  const stmt = db.prepare(`
+    INSERT INTO context_snapshots (session_id, request_id, trigger, message_count, roles, messages, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const result = stmt.run(
+    sessionId,
+    requestId ?? null,
+    trigger,
+    messageCount,
+    JSON.stringify(roles),
+    JSON.stringify(messages),
+    new Date().toISOString(),
+  );
+  return result.lastInsertRowid as number;
+}
+
+export function listSnapshots(
+  db: Database.Database,
+  sessionId: string,
+): SnapshotRow[] {
+  const stmt = db.prepare(
+    "SELECT id, session_id, request_id, trigger, message_count, roles, created_at FROM context_snapshots WHERE session_id = ? ORDER BY id DESC"
+  );
+  return stmt.all(sessionId) as SnapshotRow[];
+}
+
+export function getSnapshot(
+  db: Database.Database,
+  snapshotId: number,
+): SnapshotRow | undefined {
+  const stmt = db.prepare("SELECT * FROM context_snapshots WHERE id = ?");
+  return stmt.get(snapshotId) as SnapshotRow | undefined;
 }
 
 export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: number } {
