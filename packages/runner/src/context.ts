@@ -151,7 +151,20 @@ export function injectMessage(
 
   let parentUuid: string | null = null;
 
-  if (afterUuid) {
+  if (afterUuid === "__start__") {
+    // Insert at the very beginning — new message becomes the root
+    const chain = buildChain(records);
+    if (chain.length > 0) {
+      // Re-point the current root to descend from the new message
+      const rootUuid = chain[0].uuid;
+      for (let i = 0; i < records.length; i++) {
+        if (records[i].uuid === rootUuid && !records[i].parentUuid) {
+          records[i] = { ...records[i], parentUuid: newUuid };
+        }
+      }
+    }
+    parentUuid = null;
+  } else if (afterUuid) {
     const afterIdx = records.findIndex((r) => r.uuid === afterUuid);
     if (afterIdx === -1) throw new Error(`After-UUID ${afterUuid} not found`);
     parentUuid = afterUuid;
