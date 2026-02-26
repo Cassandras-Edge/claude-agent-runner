@@ -648,11 +648,22 @@ async function executeContextOpViaIpc(op: ContextOperation): Promise<any> {
     }
     case "inject_message": {
       const messages = await ipc.getMessages();
+      // Wrap in the same format the CLI uses for mutableMessages:
+      // { type, message: { role, content }, uuid, timestamp }
+      const innerContent = [{ type: "text", text: op.content }];
       const newMsg: any = {
-        role: op.role,
-        content: [{ type: "text", text: op.content }],
+        type: op.role,
+        message: {
+          role: op.role,
+          content: innerContent,
+        },
+        uuid: randomUUID(),
+        timestamp: new Date().toISOString(),
       };
-      if (op.after_uuid) {
+      if (op.after_uuid === "__start__") {
+        // Insert at the very beginning
+        await ipc.splice(0, 0, [newMsg]);
+      } else if (op.after_uuid) {
         const afterIdx = messages.findIndex((m: any) => m.uuid === op.after_uuid);
         if (afterIdx === -1) throw new Error(`Message not found: ${op.after_uuid}`);
         await ipc.splice(afterIdx + 1, 0, [newMsg]);
