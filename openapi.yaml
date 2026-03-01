@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Claude Agent Runner
   description: Docker-isolated Claude Code agent runtime and orchestrator
-  version: 1.0.0
+  version: 2.0.0
 
 servers:
   - url: http://localhost:9080
@@ -112,32 +112,37 @@ paths:
           $ref: "#/components/responses/NotFound"
 
     patch:
-      operationId: renameSession
-      summary: Rename a session
+      operationId: updateSession
+      summary: Rename a session or update pinned status
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [name]
               properties:
                 name:
                   type: string
+                  description: New display name (must be unique)
+                pinned:
+                  type: boolean
+                  description: Pin or unpin session to control idle timeout cleanup
       responses:
         "200":
-          description: Session renamed
+          description: Session updated
           content:
             application/json:
               schema:
                 type: object
-                required: [session_id, name]
+                required: [session_id]
                 properties:
                   session_id:
                     type: string
                     format: uuid
                   name:
                     type: string
+                  pinned:
+                    type: boolean
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -291,6 +296,259 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
+  /sessions/{session_id}/context:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    get:
+      operationId: getContext
+      summary: Get live conversation context
+      description: |
+        Returns the current in-memory conversation context from the runner process.
+        Requires the runner container to be connected and healthy.
+      responses:
+        "200":
+          description: Current conversation context
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextOperationResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/context/inject:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: injectContextMessage
+      summary: Inject a message into the conversation context
+      description: |
+        Inserts a synthetic message into the live conversation context at a specified
+        position. Requires the runner container to be connected and healthy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InjectMessageRequest"
+      responses:
+        "200":
+          description: Message injected successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextOperationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/context/messages/{uuid}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - name: uuid
+        in: path
+        required: true
+        description: UUID of the context message to remove
+        schema:
+          type: string
+          format: uuid
+
+    delete:
+      operationId: removeContextMessage
+      summary: Remove a message from the conversation context by UUID
+      description: |
+        Deletes a specific message from the live conversation context.
+        Requires the runner container to be connected and healthy.
+      responses:
+        "200":
+          description: Message removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextOperationResult"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/context/truncate:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: truncateContext
+      summary: Truncate the conversation context to the last N turns
+      description: |
+        Removes older messages from the context, keeping only the most recent turns.
+        Requires the runner container to be connected and healthy.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TruncateContextRequest"
+      responses:
+        "200":
+          description: Context truncated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextOperationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/context/compact:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: compactContext
+      summary: Schedule context compaction
+      description: |
+        Triggers a compaction of the conversation context, summarising older turns
+        to reduce token usage. Requires the runner container to be connected and healthy.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompactContextRequest"
+      responses:
+        "200":
+          description: Compaction scheduled successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextOperationResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/context/steer:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    post:
+      operationId: steerSession
+      summary: Steer or fork-and-steer an active session
+      description: |
+        Interrupts the current session stream and redirects it with a new message and
+        optional context surgery operations. When `mode` is `fork_and_steer` the
+        original session drains in the background while the user's message is sent to
+        a newly-forked SDK session in the foreground.
+
+        Works whether the session is currently busy or idle. Requires the runner
+        container to be connected and healthy (returns 503 otherwise).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SteerRequest"
+      responses:
+        "200":
+          description: Steer accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SteerResult"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/snapshots:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+
+    get:
+      operationId: listSnapshots
+      summary: List context snapshots for a session
+      description: |
+        Returns metadata for all context snapshots associated with this session.
+        Snapshots are taken automatically on steer, compact, turn_complete events,
+        or can be triggered manually. Requires the runner to be connected.
+      responses:
+        "200":
+          description: List of snapshots
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_id, snapshots]
+                properties:
+                  session_id:
+                    type: string
+                    format: uuid
+                  snapshots:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SnapshotSummary"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+    post:
+      operationId: createSnapshot
+      summary: Trigger a manual context snapshot
+      description: |
+        Forces an immediate snapshot of the current conversation context.
+        Requires the runner container to be connected and healthy.
+      responses:
+        "200":
+          description: Snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/snapshots/{snapshot_id}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - name: snapshot_id
+        in: path
+        required: true
+        description: Snapshot identifier
+        schema:
+          type: string
+
+    get:
+      operationId: getSnapshot
+      summary: Get a context snapshot with full message list
+      description: |
+        Returns the snapshot metadata together with the full messages captured at
+        snapshot time. Requires the runner container to be connected and healthy.
+      responses:
+        "200":
+          description: Snapshot with messages
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/RunnerNotConnected"
+
 components:
   parameters:
     SessionId:
@@ -323,6 +581,7 @@ components:
         - session_not_found
         - session_busy
         - session_stopped
+        - runner_not_connected
         - internal
 
     Usage:
@@ -562,6 +821,207 @@ components:
           type: string
           format: uuid
 
+    # -------------------------------------------------------------------------
+    # Context management schemas
+    # -------------------------------------------------------------------------
+
+    ContextOperationResult:
+      type: object
+      required: [success]
+      properties:
+        success:
+          type: boolean
+        data:
+          description: Operation-specific payload (e.g. full context messages on GET)
+        error:
+          type: string
+          description: Human-readable error detail when success is false
+
+    InjectMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+          description: Text content to inject
+        role:
+          type: string
+          enum: [user, assistant]
+          default: user
+          description: Role to assign the injected message
+        after_uuid:
+          type: string
+          format: uuid
+          description: |
+            UUID of an existing message after which to insert the new message.
+            If omitted the message is appended at the end of the context.
+
+    TruncateContextRequest:
+      type: object
+      required: [keep_last_n]
+      properties:
+        keep_last_n:
+          type: integer
+          minimum: 1
+          description: Number of most-recent turns to retain
+
+    CompactContextRequest:
+      type: object
+      properties:
+        custom_instructions:
+          type: string
+          description: |
+            Optional instructions passed to the compaction model to guide the
+            summary (e.g. "Focus on code changes, ignore chit-chat").
+
+    ContextOperation:
+      description: |
+        A single context mutation to apply atomically as part of a steer request.
+        Exactly one of the three operation shapes must be provided.
+      oneOf:
+        - type: object
+          required: [op, uuid]
+          properties:
+            op:
+              type: string
+              enum: [remove_message]
+            uuid:
+              type: string
+              format: uuid
+              description: UUID of the message to remove
+        - type: object
+          required: [op, content]
+          properties:
+            op:
+              type: string
+              enum: [inject_message]
+            content:
+              type: string
+              description: Text content to inject
+            role:
+              type: string
+              enum: [user, assistant]
+              default: user
+            after_uuid:
+              type: string
+              format: uuid
+              description: Insert after this message UUID; appends if omitted
+        - type: object
+          required: [op, keep_last_n]
+          properties:
+            op:
+              type: string
+              enum: [truncate]
+            keep_last_n:
+              type: integer
+              minimum: 1
+              description: Number of most-recent turns to retain
+
+    SteerRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          description: The new user message to send after steering
+        mode:
+          type: string
+          enum: [steer, fork_and_steer]
+          default: steer
+          description: |
+            `steer` — interrupt and redirect the current SDK session.
+            `fork_and_steer` — let the original session drain in the background
+            while the message is sent to a freshly-forked SDK session in the
+            foreground, then merge the background result back.
+        model:
+          type: string
+          description: Override the model used for the steered turn
+        maxTurns:
+          type: integer
+          description: Override the maximum number of agent turns
+        compact:
+          type: boolean
+          description: |
+            If true, schedule a context compaction immediately before steering
+        compact_instructions:
+          type: string
+          description: Custom instructions for compaction (used when compact is true)
+        operations:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContextOperation"
+          description: |
+            Ordered list of context surgery operations to apply before sending
+            the steering message. Applied atomically before the new turn begins.
+
+    SteerResult:
+      type: object
+      required: [session_id, status]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          description: |
+            For `steer` mode: the same session_id that was steered.
+            For `fork_and_steer` mode: the newly-forked session_id.
+        status:
+          type: string
+          enum: [steering, forking]
+          description: |
+            `steering` — the session is being redirected in-place.
+            `forking` — a fork has been initiated; the original session drains
+            in the background.
+
+    # -------------------------------------------------------------------------
+    # Snapshot schemas
+    # -------------------------------------------------------------------------
+
+    SnapshotTrigger:
+      type: string
+      enum: [steer, compact, turn_complete, manual]
+      description: |
+        What caused the snapshot to be taken:
+        - `steer` — taken before a steer or fork-and-steer operation
+        - `compact` — taken before context compaction
+        - `turn_complete` — taken automatically at the end of an agent turn
+        - `manual` — triggered explicitly via POST /snapshots
+
+    SnapshotSummary:
+      type: object
+      required: [id, session_id, trigger, message_count, roles, created_at]
+      properties:
+        id:
+          type: string
+          description: Unique snapshot identifier
+        session_id:
+          type: string
+          format: uuid
+        trigger:
+          $ref: "#/components/schemas/SnapshotTrigger"
+        message_count:
+          type: integer
+          description: Number of messages captured in the snapshot
+        roles:
+          type: array
+          items:
+            type: string
+          description: Distinct roles present in the snapshot messages (e.g. ["user", "assistant"])
+        created_at:
+          type: string
+          format: date-time
+
+    SnapshotDetail:
+      allOf:
+        - $ref: "#/components/schemas/SnapshotSummary"
+        - type: object
+          required: [messages]
+          properties:
+            messages:
+              type: array
+              items:
+                type: object
+              description: Full message objects captured at snapshot time
+
   responses:
     BadRequest:
       description: Invalid request
@@ -593,6 +1053,13 @@ components:
 
     SessionStopped:
       description: Session has stopped
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    RunnerNotConnected:
+      description: Runner container is not connected or not healthy
       content:
         application/json:
           schema:
