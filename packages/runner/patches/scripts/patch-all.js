@@ -39,16 +39,24 @@ const DIST_DIR = join(ROOT, "dist");
 
 // ── CLI args ──────────────────────────────────────────────────────────────
 
-const args = new Set(process.argv.slice(2));
+const argv = process.argv.slice(2);
+const args = new Set(argv);
 const dryRun = args.has("--dry-run");
 const jsOnly = args.has("--js-only");
 const restoreMode = args.has("--restore");
 const installMode = args.has("--install");
 
+// --binary <path>: operate on a snapshot instead of the system binary
+let customBinary = null;
+const binaryIdx = argv.indexOf("--binary");
+if (binaryIdx !== -1 && argv[binaryIdx + 1]) {
+  customBinary = argv[binaryIdx + 1];
+}
+
 // ── Restore mode ──────────────────────────────────────────────────────────
 
 if (restoreMode) {
-  const binaryPath = findBinary();
+  const binaryPath = customBinary || findBinary();
   try {
     restoreBinary(binaryPath);
     console.log(`Restored: ${binaryPath}`);
@@ -94,6 +102,8 @@ function loadPatches() {
       spec._templateCode = readFileSync(codePath, "utf-8");
     }
 
+    if (spec.disabled) continue;
+
     spec._dir = dir;
     patches.push(spec);
   }
@@ -103,7 +113,7 @@ function loadPatches() {
 
 // ── Main ──────────────────────────────────────────────────────────────────
 
-const binaryPath = findBinary();
+const binaryPath = customBinary || findBinary();
 const version = getVersion(binaryPath);
 console.log(`Binary: ${binaryPath}`);
 console.log(`Version: ${version}`);

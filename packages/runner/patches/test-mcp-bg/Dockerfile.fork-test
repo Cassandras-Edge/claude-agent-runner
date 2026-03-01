@@ -1,0 +1,8 @@
+FROM oven/bun:1.2-alpine
+
+RUN apk add --no-cache bash
+
+WORKDIR /test
+COPY test-fork.mjs .
+
+CMD ["bun", "run", "test-fork.mjs"]

@@ -5,11 +5,14 @@ Tools and patches for modifying Claude Code's embedded JavaScript.
 ## Quick Start
 
 ```bash
-# Apply all patches — produces dist/cli-patched.js + dist/claude-patched
-bun run scripts/patch-all.js
+# Apply all patches against system binary
+bun run scripts/patch-all.js --js-only
+
+# Apply against a snapshot (recommended for dev)
+bun run scripts/patch-all.js --binary snapshots/claude-2.1.52 --js-only
 
 # Preview without writing
-bun run scripts/patch-all.js --dry-run
+bun run scripts/patch-all.js --binary snapshots/claude-2.1.52 --js-only --dry-run
 
 # Apply + replace system binary
 bun run scripts/patch-all.js --install
@@ -24,9 +27,10 @@ After `claude update`, re-run `bun run scripts/patch-all.js`.
 
 | Patch | Type | Target | Description |
 |-------|------|--------|-------------|
-| `webfetch-skip-haiku` | replacement | both | Skip Haiku summarization in WebFetch |
-| `subagent-classifyHandoff-fix` | replacement | both | Fix undefined `classifyHandoffIfNeeded` crash |
+| `webfetch-skip-haiku` | replacement | both | Skip Haiku summarization in WebFetch (**disabled**) |
 | `clear-resume` | template | js-only | `/clear` and `/resume` in stream-json (SDK) mode |
+| `memory-ipc` | template | js-only | Unix socket IPC for live context surgery |
+| `mcp-background` | template | js-only | `run_in_background` for all MCP tool calls |
 
 **Target:**
 - `both` — applied to the binary (CLI) and extracted JS (SDK)
@@ -45,37 +49,26 @@ After running `patch-all.js`, the `dist/` directory contains:
 ## Structure
 
 ```
-claude-patches/
+patches/
 ├── scripts/
 │   └── patch-all.js               # Unified entry point
 ├── lib/
 │   └── patcher.js                 # Shared extraction + patching logic
 ├── patches/
-│   ├── webfetch-skip-haiku/
-│   │   ├── spec.json              # Patch definition (replacement)
-│   │   ├── patch.js               # Legacy standalone script
-│   │   └── README.md
-│   ├── subagent-classifyHandoff-fix/
-│   │   ├── spec.json              # Patch definition (replacement)
-│   │   ├── patch.js               # Legacy standalone script
-│   │   └── README.md
-│   └── clear-resume/
-│       ├── spec.json              # Patch definition (template)
-│       ├── patch-code.js.tmpl     # Template with {{VAR}} placeholders
-│       ├── patch-code.js          # Legacy hardcoded version (reference)
-│       └── README.md
+│   ├── webfetch-skip-haiku/       # Disabled replacement patch
+│   ├── clear-resume/              # /clear and /resume in SDK mode
+│   ├── memory-ipc/                # Unix socket IPC server
+│   └── mcp-background/            # Background MCP tool execution
+├── snapshots/                     # Gitignored binary + extracted JS
 ├── tools/                         # Exploration utilities
-│   ├── extract-modules.js         # Extract all embedded modules from Bun binary
-│   ├── strip-prefix.js            # Strip binary prefix from extracted JS
-│   ├── probe-binary.js            # Analyze Bun binary trailer/metadata
-│   └── patch.js                   # Generic binary patcher (legacy)
+├── test-mcp-bg/                   # Integration tests
 ├── dist/                          # Gitignored outputs
 └── README.md
 ```
 
 ## How It Works
 
-Claude Code is a Bun-compiled Mach-O binary with JavaScript embedded in a virtual filesystem (`$bunfs`). The JS source is stored as plain text, enabling three patching approaches:
+Claude Code is a Bun-compiled binary with JavaScript embedded in a virtual filesystem (`$bunfs`). The JS source is stored as plain text, enabling three patching approaches:
 
 ### 1. Replacement patches (`type: "replacement"`)
 
@@ -114,18 +107,42 @@ Inject new code after a marker string. JS-only (can't change binary length). The
   "id": "my-patch",
   "type": "template",
   "anchor": "unique stable string to locate the right code region",
+  "globalExtractors": {
+    "FAR_VAR": "regex to find functions anywhere in the 10MB JS"
+  },
   "extractors": {
-    "MY_VAR": "regex with (capture group) to extract variable name"
+    "NEAR_VAR": "regex to find variables within 30KB of anchor"
   },
   "codeFile": "patch-code.js.tmpl",
-  "insertAfter": "let {{MY_VAR}}=something;",
+  "insertAfter": "let {{NEAR_VAR}}=something;",
   "target": "js-only"
 }
 ```
 
-The patch code template uses `{{MY_VAR}}` placeholders that get replaced with the derived names. See [clear-resume/README.md](patches/clear-resume/README.md) for a detailed example.
+The patch code template uses `{{MY_VAR}}` placeholders that get replaced with the derived names.
 
-**Pipeline:** Extract cli.js from binary → Run extractors to resolve variable names → Interpolate template → Insert code → Output patched JS + patched binary.
+**Extractors:**
+- `extractors` — scan a 30KB region around the anchor (5KB before, 25KB after)
+- `globalExtractors` — scan the full JS content (for functions defined far from the anchor)
+- Both are ordered, chainable (`{{VAR}}` references to earlier extractors), and must have exactly one capture group
+
+**Pipeline:** Extract cli.js from binary → Run global extractors → Run local extractors → Interpolate template + insertAfter → Insert code → Output patched JS.
+
+## Snapshots
+
+Keep a stable binary snapshot for development instead of patching the system binary:
+
+```bash
+# Create snapshot (one-time)
+cp ~/.local/share/claude/versions/2.1.52 snapshots/claude-2.1.52
+
+# Extract JS for analysis
+node -e "const {extractJS}=await import('./lib/patcher.js'); \
+  require('fs').writeFileSync('snapshots/cli-2.1.52.js', extractJS('snapshots/claude-2.1.52'))"
+
+# Patch against snapshot
+bun run scripts/patch-all.js --binary snapshots/claude-2.1.52 --js-only
+```
 
 ## After `claude update`
 
@@ -134,7 +151,7 @@ The patch code template uses `{{MY_VAR}}` placeholders that get replaced with th
 3. If a patch is skipped (pattern not found):
    - The minified code changed in the new version
    - For **replacement** patches: extract the new cli.js, find the equivalent expression, update `find`/`replace` in `spec.json`
-   - For **template** patches: the extractors or anchor may need updating — see the "Updating Extractors" section in the patch's README
+   - For **template** patches: the extractors or anchor may need updating — see the "Updating Extractors" section in each patch's README
 
 ## What's Stable vs What Changes
 
@@ -142,9 +159,10 @@ When reverse-engineering a new CLI version, these patterns help:
 
 **Stable across builds** (safe to use as anchors/extractors):
 - Error message strings: `"only prompt commands are supported in streaming mode"`
-- Property names in object literals: `mutableMessages:`, `session_id:`, `queuedCommands:`
-- String literals: `"stream-json"`, `"result"`, `"success"`
+- Property names in object literals: `mutableMessages:`, `session_id:`, `originalMcpToolName:`
+- String literals: `"stream-json"`, `"task_started"`, `"pending"`
 - Method names on stable APIs: `.enqueue(`, `.randomUUID()`, `.push(`
+- Structural patterns: `outputOffset:0,notified:!1`, `tasks?.[`
 
 **Changes every build** (must be derived, not hardcoded):
 - Local variable names: `r`, `HT`, `I`, `E`, `kR`, `MK`, `Te`
@@ -154,17 +172,9 @@ When reverse-engineering a new CLI version, these patterns help:
 ## Adding New Patches
 
 1. Create `patches/<name>/` with a `spec.json` (see types above)
-2. For insertion/template patches, add the code file
-3. Add a `README.md` documenting the problem, approach, and how to update for new versions
-4. Run `bun run scripts/patch-all.js`
-
-## Binary Layout (v2.1.42)
-
-The binary contains 17 embedded modules. The main code lives in two copies of `cli.js`:
-- Module [0]: bytecode-annotated (37 MB)
-- Module [5]: readable source (10 MB)
-
-Both contain the same JS source. Replacement patches target both occurrences.
+2. For insertion/template patches, add the code file (`.js.tmpl` for templates)
+3. Add a `README.md` documenting the problem, approach, and how to update
+4. Run `bun run scripts/patch-all.js --dry-run` to verify
 
 ## Exploration Tools
 

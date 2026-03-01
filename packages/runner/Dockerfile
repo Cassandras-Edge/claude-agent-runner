@@ -6,9 +6,9 @@ RUN apk add --no-cache bash && \
     npm cache clean --force
 
 # Copy patch files
-COPY claude-patches/lib/ /patches/lib/
-COPY claude-patches/scripts/ /patches/scripts/
-COPY claude-patches/patches/ /patches/patches/
+COPY packages/runner/patches/lib/ /patches/lib/
+COPY packages/runner/patches/scripts/ /patches/scripts/
+COPY packages/runner/patches/patches/ /patches/patches/
 
 # Patch in JS-only mode (no binary output, no codesign)
 WORKDIR /patches
