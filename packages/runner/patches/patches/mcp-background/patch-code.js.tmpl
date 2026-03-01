@@ -5,7 +5,8 @@ var _oc=_t.call;
 _t=Object.assign({},_t,{call:async function(D,$,H,q,O){
 if(D&&D.run_in_background===true){delete D.run_in_background;
 var _id={{TASK_ID_FN}}("local_bash");
-var _tk={{TASK_OBJ_FN}}(_id,"local_bash","MCP: "+(_t.originalMcpToolName||_t.name),$.toolUseId||null);
+var _mcpName=(_t.mcpInfo&&_t.mcpInfo.toolName)||_t.name;
+var _tk={{TASK_OBJ_FN}}(_id,"local_bash","MCP: "+_mcpName,$.toolUseId||null);
 _tk.status="running";
 var _sa=$.setAppState;
 (async function(){try{
@@ -21,7 +22,7 @@ require("node:fs").writeFileSync({{OUTPUT_PATH_FN}}(_id),_out);
 try{require("node:fs").writeFileSync({{OUTPUT_PATH_FN}}(_id),"Error: "+String(e))}catch(_we){}
 {{TASK_UPDATE_FN}}(_id,_sa,function(t){return Object.assign({},t,{status:"failed",endTime:Date.now()})});
 }})();
-return{data:[{type:"text",text:"MCP tool '"+(_t.originalMcpToolName||_t.name)+"' running in background (task ID: "+_id+"). Use TaskOutput to retrieve the result."}]}}
+return{data:[{type:"text",text:"MCP tool '"+_mcpName+"' running in background (task ID: "+_id+"). Use TaskOutput to retrieve the result."}]}}
 if(D&&"run_in_background"in D)delete D.run_in_background;
 return _oc.call(_t,D,$,H,q,O)}});
 /* === END CLAUDIAN PATCH === */

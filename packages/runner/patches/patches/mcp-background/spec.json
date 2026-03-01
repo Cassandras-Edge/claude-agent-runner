@@ -3,21 +3,22 @@
   "type": "template",
   "description": "Add run_in_background support to all MCP tool calls using AppState.tasks",
   "target": "js-only",
-  "anchor": "originalMcpToolName",
+  "anchor": "mcpInfo:{serverName",
   "globalExtractors": {
-    "TASK_ID_FN":       "function (\\w+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\.randomUUID\\(\\)",
+    "TASK_ID_FN":       "function (\\w+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\(8\\)",
     "TASK_OBJ_FN":      "function (\\w+)\\(\\w+,\\w+,\\w+,\\w+\\)\\{return\\{id:\\w+,type:\\w+,status:\"pending\"[^}]+outputOffset:0,notified:!1",
-    "OUTPUT_PATH_FN":   "function (\\w+)\\(\\w+\\)\\{return \\w+\\.join\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)\\}",
+    "OUTPUT_PATH_FN":   "function (\\w+)\\(\\w+\\)\\{return \\w+\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)\\}",
     "TASK_REGISTER_FN": "function (\\w+)\\(\\w+,\\w+\\)\\{\\w+\\(\\(\\w+\\)=>\\(\\{[^}]*tasks:\\{[^}]*\\[\\w+\\.id\\]:\\w+\\}\\}\\)\\)",
     "TASK_UPDATE_FN":   "function ([\\w$]+)\\([\\w$]+,[\\w$]+,[\\w$]+\\)\\{[\\w$]+\\(\\([\\w$]+\\)=>\\{let [\\w$]+=[\\w$]+\\.tasks\\?\\.\\[[\\w$]+\\];if\\(![\\w$]+\\)return [\\w$]+;return\\{",
-    "MKDIR_FN":         "async function (\\w+)\\(\\)\\{await \\w+\\.mkdir\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}"
+    "MKDIR_FN":         "async function (\\w+)\\(\\)\\{await \\w+\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}"
   },
   "extractors": {
     "CONN_VAR":   "async\\((\\w+)\\)=>\\{if\\(\\w+\\.type!==\"connected\"\\)return\\[\\]",
-    "TOOL_VAR":   "\\.map\\(\\((\\w+)\\)=>\\(\\{",
-    "GUARD_FN":   "(\\w+)\\(\\w+\\.name\\)\\?\\w+\\(\\w+\\.name\\):\\{\\}\\}\\)\\)\\.filter",
-    "COMPAT_FN":  "\\w+\\(\\w+\\.name\\)\\?(\\w+)\\(\\w+\\.name\\):\\{\\}\\}\\)\\)\\.filter",
-    "FILTER_FN":  ":\\{\\}\\}\\)\\)\\.filter\\((\\w+)\\)"
+    "TOOL_VAR":   "return \\w+\\.map\\(\\((\\w+)\\)=>\\{",
+    "GUARD_FN":   "(\\w+)\\(\\w+\\.name\\)\\?\\w+\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
+    "COMPAT_FN":  "\\w+\\(\\w+\\.name\\)\\?(\\w+)\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
+    "FILTER_FN":  ":\\{\\}\\}\\}\\)\\.filter\\((\\w+)\\)"
   },
   "codeFile": "patch-code.js.tmpl",
-  "insertAfter": "{{GUARD_FN}}({{CONN_VAR}}.name)?{{COMPAT_FN}}({{TOOL_VAR}}.name):{}}))"}
+  "insertAfter": "{{GUARD_FN}}({{CONN_VAR}}.name)?{{COMPAT_FN}}({{TOOL_VAR}}.name):{}}})"
+}
