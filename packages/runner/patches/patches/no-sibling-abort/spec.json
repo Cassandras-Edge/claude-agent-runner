@@ -1,0 +1,8 @@
+{
+  "id": "no-sibling-abort",
+  "type": "replacement",
+  "description": "Remove sibling tool call abort — let each tool succeed or fail independently",
+  "find": "if(this.hasErrored&&!this.allToolsAreWriteOrEdit())return\"sibling_error\"",
+  "replace": "",
+  "target": "both"
+}

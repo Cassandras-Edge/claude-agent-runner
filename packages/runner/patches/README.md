@@ -31,6 +31,7 @@ After `claude update`, re-run `bun run scripts/patch-all.js`.
 | `clear-resume` | template | js-only | `/clear` and `/resume` in stream-json (SDK) mode |
 | `memory-ipc` | template | js-only | Unix socket IPC for live context surgery |
 | `mcp-background` | template | js-only | `run_in_background` for all MCP tool calls |
+| `no-sibling-abort` | replacement | both | Remove sibling tool call abort — each tool completes independently |
 
 **Target:**
 - `both` — applied to the binary (CLI) and extracted JS (SDK)
