@@ -240,12 +240,24 @@ export interface OrchestratorSteerCommand extends WsCorrelation {
   operations?: ContextOperation[];
 }
 
+/** Orchestrator → Runner: fork session, let background finish, handle new message in foreground */
+export interface OrchestratorForkAndSteerCommand extends WsCorrelation {
+  type: "fork_and_steer";
+  /** Message to send as the next user turn in the forked foreground session */
+  message: string;
+  /** Model override for the forked session */
+  model?: string;
+  /** Max turns for the forked session */
+  maxTurns?: number;
+}
+
 export type OrchestratorCommand =
   | OrchestratorMessageCommand
   | OrchestratorShutdownCommand
   | OrchestratorCompactCommand
   | OrchestratorContextCommand
-  | OrchestratorSteerCommand;
+  | OrchestratorSteerCommand
+  | OrchestratorForkAndSteerCommand;
 
 // --- Context Snapshot Types ---
 
