@@ -237,8 +237,25 @@ export function resolveTemplate(jsContent, spec) {
   const regionEnd = Math.min(jsContent.length, anchorIdx + 25000);
   const region = jsContent.substring(regionStart, regionEnd);
 
-  // 2. Run extractors in order, building vars map
+  // 1b. Run global extractors against the full JS (not region-limited).
+  // Use for functions defined far from the anchor (e.g., task management helpers).
   const vars = {};
+  if (spec.globalExtractors) {
+    for (const [name, rawPattern] of Object.entries(spec.globalExtractors)) {
+      let pattern = rawPattern;
+      for (const [k, v] of Object.entries(vars)) {
+        pattern = pattern.replaceAll(`{{${k}}}`, v);
+      }
+      const regex = new RegExp(pattern);
+      const match = jsContent.match(regex);
+      if (!match || !match[1]) {
+        throw new Error(`Global extractor "${name}" failed: /${pattern}/ not found in full JS`);
+      }
+      vars[name] = match[1];
+    }
+  }
+
+  // 2. Run extractors in order, building vars map (region-limited)
   for (const [name, rawPattern] of Object.entries(spec.extractors)) {
     // Interpolate previously resolved vars into the pattern
     let pattern = rawPattern;

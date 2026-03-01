@@ -1,8 +1,0 @@
-{
-  "id": "subagent-classifyHandoff-fix",
-  "type": "replacement",
-  "description": "Fix undefined classifyHandoffIfNeeded crash on subagent completion",
-  "find": "ZR=await classifyHandoffIfNeeded({agentMessages:IT,toolPermissionContext:TR.toolPermissionContext,abortSignal:QT.abortController.signal,isNonInteractiveSession:G.options.isNonInteractiveSession,subagentType:R,totalToolUseCount:NT.totalToolUseCount})",
-  "replace": "ZR=await (async()=>null)()",
-  "target": "both"
-}
