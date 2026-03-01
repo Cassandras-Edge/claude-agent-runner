@@ -268,6 +268,37 @@ export class WsBridge extends EventEmitter {
     return true;
   }
 
+  sendForkAndSteer(
+    sessionId: string,
+    message: string,
+    options?: {
+      model?: string;
+      maxTurns?: number;
+      requestId?: string;
+      traceId?: string;
+    },
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_fork_and_steer", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "fork_and_steer",
+      message,
+      ...(options?.model ? { model: options.model } : {}),
+      ...(options?.maxTurns ? { maxTurns: options.maxTurns } : {}),
+      request_id: options?.requestId,
+      trace_id: options?.traceId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_fork_and_steer_command", {
+      session_id: sessionId,
+      message_preview: message.slice(0, 120),
+      request_id: options?.requestId,
+    });
+    return true;
+  }
+
   sendContextCommand(
     sessionId: string,
     operation: ContextOperation,

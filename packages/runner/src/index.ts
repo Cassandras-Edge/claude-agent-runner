@@ -8,7 +8,7 @@ import type { SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-s
 import { execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
-import type { OrchestratorCommand, ContextOperation } from "@claude-agent-runner/shared";
+import type { OrchestratorCommand, OrchestratorForkAndSteerCommand, ContextOperation } from "@claude-agent-runner/shared";
 import {
   readSessionChain,
   removeMessage,
@@ -18,6 +18,8 @@ import {
 } from "./context.js";
 import { serializeEvent } from "./serialize.js";
 import { createStderrRingBuffer, buildZeroEventError } from "./helpers.js";
+import { drainBackground, type DrainResult } from "./background-drainer.js";
+import { mergeBackResult } from "./merge-back.js";
 import { runWithLogContext, logger } from "./logger.js";
 import { MemIpcClient } from "./mem-ipc.js";
 
@@ -155,6 +157,24 @@ let pendingSteer: {
   compactInstructions?: string;
   operations?: ContextOperation[];
 } | null = null;
+
+// Pending fork-and-steer: set by `fork_and_steer` command, consumed after stream loop breaks
+let pendingForkAndSteer: {
+  message: string;
+  model?: string;
+  maxTurns?: number;
+  requestId?: string;
+  traceId?: string;
+} | null = null;
+
+// Background sessions: tracks sessions that were forked off and are finishing work
+type BackgroundSession = {
+  sdkSessionId: string;
+  taskId: string;
+  toolUseSummary: string;
+  drainPromise: Promise<DrainResult>;
+};
+const backgroundSessions: Map<string, BackgroundSession> = new Map();
 
 // --- V2 Session creation ---
 
@@ -383,6 +403,14 @@ async function runTurn(
       // Stop if pendingSteer was set (mid-turn interrupt)
       if (pendingSteer) {
         logger.info("runner.agent", "stream_interrupted_for_steer", {
+          session_id: SESSION_ID,
+        });
+        break;
+      }
+
+      // Stop if pendingForkAndSteer was set (fork background, continue foreground)
+      if (pendingForkAndSteer) {
+        logger.info("runner.agent", "stream_interrupted_for_fork_and_steer", {
           session_id: SESSION_ID,
         });
         break;
@@ -855,6 +883,149 @@ function connect(): void {
             }
           }
 
+          // Check for pending fork-and-steer (takes priority — preserves background work)
+          if (pendingForkAndSteer) {
+            const forkReq = pendingForkAndSteer;
+            pendingForkAndSteer = null;
+
+            logger.info("runner.ws", "fork_and_steer_executing", {
+              session_id: SESSION_ID,
+              request_id: forkReq.requestId,
+            });
+
+            // 1. The original session is still running — drain it in the background
+            const taskId = `fas_${randomUUID().replace(/-/g, "").substring(0, 8)}`;
+            if (session) {
+              const bgDrain = drainBackground(session, ws, SESSION_ID, taskId);
+              backgroundSessions.set(taskId, {
+                sdkSessionId: sdkSessionId!,
+                taskId,
+                toolUseSummary: "fork-and-steer background",
+                drainPromise: bgDrain,
+              });
+
+              // When background completes, merge result into foreground
+              bgDrain.then(async (result) => {
+                logger.info("runner.background", "bg_complete", {
+                  session_id: SESSION_ID,
+                  task_id: taskId,
+                  success: result.success,
+                });
+
+                // Merge back into foreground session via IPC
+                if (ipc?.isConnected) {
+                  await mergeBackResult(ipc, result, taskId, SESSION_ID);
+                }
+
+                // Notify orchestrator
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({
+                    type: "background_complete",
+                    session_id: SESSION_ID,
+                    task_id: taskId,
+                    success: result.success,
+                    error: result.error,
+                  }));
+                }
+
+                backgroundSessions.delete(taskId);
+              }).catch((err) => {
+                logger.error("runner.background", "bg_merge_failed", {
+                  session_id: SESSION_ID,
+                  task_id: taskId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+                backgroundSessions.delete(taskId);
+              });
+            }
+
+            // 2. Fork a new SDK session from the current JSONL
+            try {
+              const oldSdkSessionId = sdkSessionId!;
+              session = await unstable_v2_resumeSession(oldSdkSessionId, {
+                ...buildSessionOptions(),
+                forkSession: true,
+              } as any);
+
+              // Get new session ID from first event
+              const initStream = session.stream();
+              for await (const event of initStream) {
+                if ("session_id" in event && (event as any).session_id) {
+                  sdkSessionId = (event as any).session_id;
+                  logger.info("runner.ws", "forked_session_created", {
+                    session_id: SESSION_ID,
+                    old_sdk_session: oldSdkSessionId,
+                    new_sdk_session: sdkSessionId,
+                    task_id: taskId,
+                  });
+                  break;
+                }
+              }
+
+              // 3. Reconnect IPC to the new CLI subprocess
+              if (ipc) {
+                ipc.disconnect();
+              }
+              ipc = new MemIpcClient();
+              await ipc.connect(MEM_SOCKET_PATH).catch(() => {
+                logger.warn("runner.ws", "fork_ipc_reconnect_failed", { session_id: SESSION_ID });
+              });
+
+              // 4. Inject synthetic result for the in-flight tool call
+              if (ipc?.isConnected) {
+                await ipc.push([{
+                  role: "user",
+                  content: [{
+                    type: "text",
+                    text: `[System] Previous operation forked to background (task ID: ${taskId}). It will complete independently. Results will be merged back when done.`,
+                  }],
+                }]);
+              }
+
+              // 5. Notify orchestrator about the fork
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: "event",
+                  session_id: SESSION_ID,
+                  event: {
+                    type: "system",
+                    subtype: "fork_and_steer",
+                    task_id: taskId,
+                    old_sdk_session: oldSdkSessionId,
+                    new_sdk_session: sdkSessionId,
+                  },
+                  request_id: forkReq.requestId,
+                  trace_id: forkReq.traceId,
+                }));
+              }
+            } catch (forkErr) {
+              logger.error("runner.ws", "fork_and_steer_fork_failed", {
+                session_id: SESSION_ID,
+                error: forkErr instanceof Error ? forkErr.message : String(forkErr),
+              });
+              // Fall back to normal steer behavior
+              pendingSteer = {
+                message: forkReq.message,
+                model: forkReq.model,
+                maxTurns: forkReq.maxTurns,
+                requestId: forkReq.requestId,
+                traceId: forkReq.traceId,
+              };
+            }
+
+            // Continue the while loop with the forked session and user's message
+            if (!pendingSteer) {
+              currentMessage = forkReq.message;
+              currentModel = forkReq.model;
+              currentMaxTurns = forkReq.maxTurns;
+              currentRequestId = forkReq.requestId;
+              currentTraceId = forkReq.traceId;
+              useForceCompact = false;
+              useCompactInstructions = undefined;
+              continue;
+            }
+          }
+
           // Check for pending steer
           if (!pendingSteer) break;
 
@@ -1008,6 +1179,61 @@ function connect(): void {
           isBusy = false;
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready", request_id: steerRequestId, trace_id: steerTraceId }));
+          }
+        });
+      }
+      return;
+    }
+
+    if (msg.type === "fork_and_steer") {
+      const fasMsg = msg as OrchestratorForkAndSteerCommand;
+      const fasRequestId = fasMsg.request_id;
+      const fasTraceId = fasMsg.trace_id;
+
+      logger.info("runner.ws", "fork_and_steer_received", {
+        session_id: SESSION_ID,
+        is_busy: isBusy,
+        message_preview: fasMsg.message?.slice(0, 120),
+        request_id: fasRequestId,
+      });
+
+      if (isBusy) {
+        // Mid-turn: set pending — the stream loop will pick it up and fork
+        pendingForkAndSteer = {
+          message: fasMsg.message,
+          model: fasMsg.model,
+          maxTurns: fasMsg.maxTurns,
+          requestId: fasRequestId,
+          traceId: fasTraceId,
+        };
+        // V2: the stream loop checks pendingForkAndSteer and breaks
+      } else {
+        // Not busy: just send as a normal message (no need to fork, nothing is running)
+        logger.info("runner.ws", "fork_and_steer_idle_fallback", { session_id: SESSION_ID });
+        // Rewrite as a normal message command
+        return runWithLogContext({ sessionId: SESSION_ID, requestId: fasRequestId, traceId: fasTraceId }, async () => {
+          isBusy = true;
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "busy", request_id: fasRequestId, trace_id: fasTraceId }));
+          try {
+            await runTurn(ws, fasMsg.message, {
+              model: fasMsg.model,
+              maxTurns: fasMsg.maxTurns,
+              requestId: fasRequestId,
+              traceId: fasTraceId,
+            });
+          } catch (err) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            logger.error("runner.ws", "fork_and_steer_idle_failed", { session_id: SESSION_ID, error: errorMsg });
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({
+                type: "event", session_id: SESSION_ID, request_id: fasRequestId, trace_id: fasTraceId,
+                event: { type: "result", subtype: "error_during_execution", result: "", errors: [errorMsg], usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 0 } },
+              }));
+            }
+          }
+          isBusy = false;
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready", request_id: fasRequestId, trace_id: fasTraceId }));
           }
         });
       }

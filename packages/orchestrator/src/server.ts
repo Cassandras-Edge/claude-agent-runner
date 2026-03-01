@@ -318,6 +318,7 @@ export function createServer(ctx: AppContext): Hono {
 
     let body: {
       message: string;
+      mode?: "steer" | "fork_and_steer";
       model?: string;
       maxTurns?: number;
       compact?: boolean;
@@ -331,25 +332,37 @@ export function createServer(ctx: AppContext): Hono {
       return c.json({ code: "invalid_request", message: "Missing required field: message" } satisfies ErrorResponse, 400 as any);
     }
 
-    const sent = ctx.bridge.sendSteer(session.id, body.message, {
-      model: body.model,
-      maxTurns: body.maxTurns,
-      compact: body.compact,
-      compactInstructions: body.compact_instructions,
-      operations: body.operations,
-      requestId,
-      traceId,
-    });
+    const mode = body.mode || "steer";
+
+    let sent: boolean;
+    if (mode === "fork_and_steer") {
+      sent = ctx.bridge.sendForkAndSteer(session.id, body.message, {
+        model: body.model,
+        maxTurns: body.maxTurns,
+        requestId,
+        traceId,
+      });
+    } else {
+      sent = ctx.bridge.sendSteer(session.id, body.message, {
+        model: body.model,
+        maxTurns: body.maxTurns,
+        compact: body.compact,
+        compactInstructions: body.compact_instructions,
+        operations: body.operations,
+        requestId,
+        traceId,
+      });
+    }
     if (!sent) return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 503 as any);
 
-    logger.info("orchestrator.api", "steer_sent", {
+    logger.info("orchestrator.api", `${mode}_sent`, {
       session_id: session.id,
       was_busy: session.status === "busy",
       operations_count: body.operations?.length ?? 0,
       request_id: requestId,
     });
 
-    return c.json({ session_id: session.id, steered: true, was_busy: session.status === "busy" });
+    return c.json({ session_id: session.id, steered: true, mode, was_busy: session.status === "busy" });
   });
 
   // --- Snapshots ---
