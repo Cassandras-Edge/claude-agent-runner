@@ -52,8 +52,8 @@ const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_M
 const COMPACT_THRESHOLD_PCT = parseInt(process.env.RUNNER_COMPACT_THRESHOLD_PCT || "20", 10);
 const WORKSPACE = "/workspace";
 
-// IPC socket path for live context surgery
-const MEM_SOCKET_PATH = process.env.CLAUDE_MEM_SOCKET || "/tmp/claude-mem.sock";
+// IPC socket path for live context surgery (mutable: changes on fork-and-steer)
+let MEM_SOCKET_PATH = process.env.CLAUDE_MEM_SOCKET || "/tmp/claude-mem.sock";
 
 // Patched CLI executable (set in Docker, fallback to global claude for dev)
 const PATCHED_CLI_PATH = process.env.CLAUDE_PATCHED_CLI || undefined;
@@ -940,49 +940,42 @@ function connect(): void {
             }
 
             // 2. Fork a new SDK session from the current JSONL
+            //    Use a new IPC socket path so the forked CLI doesn't collide
+            //    with the background CLI still using the original socket.
             try {
               const oldSdkSessionId = sdkSessionId!;
+              const oldSocketPath = MEM_SOCKET_PATH;
+              MEM_SOCKET_PATH = `/tmp/claude-mem-${randomUUID().replace(/-/g, "").substring(0, 8)}.sock`;
+              logger.info("runner.ws", "fork_new_socket_path", {
+                session_id: SESSION_ID,
+                old_socket: oldSocketPath,
+                new_socket: MEM_SOCKET_PATH,
+              });
+
               session = await unstable_v2_resumeSession(oldSdkSessionId, {
                 ...buildSessionOptions(),
                 forkSession: true,
               } as any);
 
-              // Get new session ID from first event
-              const initStream = session.stream();
-              for await (const event of initStream) {
-                if ("session_id" in event && (event as any).session_id) {
-                  sdkSessionId = (event as any).session_id;
-                  logger.info("runner.ws", "forked_session_created", {
-                    session_id: SESSION_ID,
-                    old_sdk_session: oldSdkSessionId,
-                    new_sdk_session: sdkSessionId,
-                    task_id: taskId,
-                  });
-                  break;
-                }
-              }
-
-              // 3. Reconnect IPC to the new CLI subprocess
-              if (ipc) {
-                ipc.disconnect();
-              }
-              ipc = new MemIpcClient();
-              await ipc.connect(MEM_SOCKET_PATH).catch(() => {
-                logger.warn("runner.ws", "fork_ipc_reconnect_failed", { session_id: SESSION_ID });
+              logger.info("runner.ws", "forked_session_created", {
+                session_id: SESSION_ID,
+                old_sdk_session: oldSdkSessionId,
+                task_id: taskId,
               });
 
-              // 4. Inject synthetic result for the in-flight tool call
-              if (ipc?.isConnected) {
-                await ipc.push([{
-                  role: "user",
-                  content: [{
-                    type: "text",
-                    text: `[System] Previous operation forked to background (task ID: ${taskId}). It will complete independently. Results will be merged back when done.`,
-                  }],
-                }]);
+              // The new session's sdkSessionId will be captured by runTurn's
+              // stream loop (same as normal session init). Don't try to read
+              // from stream here — the CLI waits for input first.
+
+              // 3. Disconnect old IPC (background CLI keeps its socket).
+              //    New IPC will connect after the forked CLI starts streaming
+              //    (ensureIpcConnected is called in runTurn's stream loop).
+              if (ipc) {
+                ipc.disconnect();
+                ipc = null;
               }
 
-              // 5. Notify orchestrator about the fork
+              // 4. Notify orchestrator about the fork
               if (ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                   type: "event",
@@ -992,7 +985,6 @@ function connect(): void {
                     subtype: "fork_and_steer",
                     task_id: taskId,
                     old_sdk_session: oldSdkSessionId,
-                    new_sdk_session: sdkSessionId,
                   },
                   request_id: forkReq.requestId,
                   trace_id: forkReq.traceId,
