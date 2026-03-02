@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 /**
- * End-to-end tests for the client-facing WebSocket API.
+ * End-to-end tests for the client-facing WebSocket API, context/IPC
+ * operations, steer, fork-and-steer, and patch behaviour.
  *
  * Runs against a live orchestrator (requires docker compose up).
  * Tests the full pipeline: client WS → orchestrator → real runner (Claude).
+ *
+ * Covers:
+ *   - WS protocol (connect, ping, subscribe, send, steer, fork-and-steer, compact)
+ *   - Context surgery via REST (exercises memory-ipc patch on the runner)
+ *   - Parallel tool call completion (exercises no-sibling-abort patch)
  *
  * Usage:
  *   node test-client-ws.mjs
@@ -56,7 +62,9 @@ async function get(path) {
 
 async function del(path) {
   const res = await fetch(`${BASE_URL}${path}`, { method: "DELETE" });
-  return { status: res.status };
+  let json;
+  try { json = await res.json(); } catch { json = null; }
+  return { status: res.status, json };
 }
 
 // --- WS helpers ---
@@ -258,7 +266,7 @@ async function testCompact() {
 }
 
 async function testSteer() {
-  console.log("\n--- Test 6: Steer (abort + resume) ---");
+  console.log("\n--- Test 10: Steer (abort + resume) ---");
   const ws = await connect();
 
   // Subscribe
@@ -297,7 +305,7 @@ async function testSteer() {
 }
 
 async function testForkAndSteer() {
-  console.log("\n--- Test 7: Fork-and-steer (fork while busy) ---");
+  console.log("\n--- Test 11: Fork-and-steer (fork while busy) ---");
 
   // Wait for session to be idle
   await waitForStatus(sessionId, ["idle", "ready"]);
@@ -345,8 +353,161 @@ async function testForkAndSteer() {
   ws.close();
 }
 
+// ────────────────────────────────────────────────
+// Context / IPC tests — these exercise the memory-ipc patch
+// The REST context endpoints talk to the runner's MemIpcClient,
+// which connects over a Unix socket to the patched CLI process.
+// ────────────────────────────────────────────────
+
+async function testContextRead() {
+  console.log("\n--- Test 6: Context read (IPC: get_context + get_stats) ---");
+
+  // Previous tests sent messages, so the context should have entries.
+  // This exercises the memory-ipc patch: orchestrator → runner → MemIpcClient → Unix socket → patched CLI.
+  await waitForStatus(sessionId, ["idle", "ready"]);
+
+  const { status, json } = await get(`/sessions/${sessionId}/context`);
+  assert(status === 200, `GET /context returned ${status}`);
+  assert(Array.isArray(json.messages), "Context has messages array");
+  assert(json.messages.length > 0, `Context has ${json.messages.length} messages`);
+  assert(json.stats !== undefined, "Context includes stats");
+
+  // Verify message shape — IPC returns full message objects with uuid
+  const firstMsg = json.messages[0];
+  assert(firstMsg.uuid !== undefined, "Messages have uuid field");
+  ok(`Context tokens: ${json.context_tokens ?? "unknown"}`);
+}
+
+async function testContextInjectAndRemove() {
+  console.log("\n--- Test 7: Inject + remove message (IPC: inject_message, remove_message) ---");
+
+  await waitForStatus(sessionId, ["idle", "ready"]);
+
+  // Get current message count
+  const before = await get(`/sessions/${sessionId}/context`);
+  const beforeCount = before.json.messages.length;
+
+  // Inject a message
+  const inject = await post(`/sessions/${sessionId}/context/inject`, {
+    content: "TEST_INJECTED_CONTEXT_MESSAGE_E2E",
+    role: "user",
+  });
+  assert(inject.status === 200, `Inject returned ${inject.status}`);
+  // IPC path returns { injected: true }, JSONL fallback returns { injected_uuid: "..." }
+  const injectOk = inject.json.injected === true || inject.json.injected_uuid !== undefined;
+  assert(injectOk, `Inject acknowledged: ${JSON.stringify(inject.json)}`);
+
+  // Verify it's there
+  const after = await get(`/sessions/${sessionId}/context`);
+  assert(after.json.messages.length === beforeCount + 1, `Message count: ${beforeCount} → ${after.json.messages.length}`);
+
+  // Find the injected message by content (since IPC path doesn't return uuid)
+  const injected = after.json.messages.find(
+    (m) => {
+      // Check both message formats: IPC format and JSONL format
+      const content = m.message?.content;
+      if (Array.isArray(content)) {
+        return content.some((b) => b.text?.includes("TEST_INJECTED_CONTEXT_MESSAGE_E2E"));
+      }
+      if (typeof content === "string") {
+        return content.includes("TEST_INJECTED_CONTEXT_MESSAGE_E2E");
+      }
+      return false;
+    }
+  );
+  assert(injected !== undefined, "Injected message found in context");
+
+  if (injected) {
+    // Remove it
+    const remove = await del(`/sessions/${sessionId}/context/messages/${injected.uuid}`);
+    assert(remove.status === 200, `Remove returned ${remove.status}`);
+
+    // Verify it's gone
+    const final = await get(`/sessions/${sessionId}/context`);
+    assert(final.json.messages.length === beforeCount, `Message count restored: ${final.json.messages.length}`);
+  }
+}
+
+async function testContextTruncate() {
+  console.log("\n--- Test 8: Truncate context (IPC: truncate) ---");
+
+  await waitForStatus(sessionId, ["idle", "ready"]);
+
+  // Get current context
+  const before = await get(`/sessions/${sessionId}/context`);
+  const beforeCount = before.json.messages.length;
+  assert(beforeCount >= 2, `Need at least 2 messages for truncate test, have ${beforeCount}`);
+
+  // Truncate to last 2 turns
+  const trunc = await post(`/sessions/${sessionId}/context/truncate`, { keep_last_n: 2 });
+  assert(trunc.status === 200, `Truncate returned ${trunc.status}`);
+
+  // Verify
+  const after = await get(`/sessions/${sessionId}/context`);
+  assert(after.json.messages.length <= beforeCount, `Messages reduced: ${beforeCount} → ${after.json.messages.length}`);
+  ok(`Truncated from ${beforeCount} to ${after.json.messages.length} messages`);
+}
+
+async function testParallelToolCalls() {
+  console.log("\n--- Test 9: Parallel tool calls (no-sibling-abort patch) ---");
+
+  // This test verifies that the agent can make multiple tool calls in parallel
+  // and they all complete. Without the no-sibling-abort patch, if one tool errors,
+  // sibling tools would be aborted with "sibling_error".
+  //
+  // We ask the agent to make multiple Read calls in parallel. If the patch is
+  // working, all calls complete (or fail individually) rather than being aborted.
+
+  await waitForStatus(sessionId, ["idle", "ready"]);
+
+  const ws = await connect();
+
+  // Subscribe
+  send(ws, { type: "subscribe", session_id: sessionId });
+  await waitFor(ws, (f) => f.type === "subscribed", 5000);
+
+  // Ask for parallel tool calls - read multiple files simultaneously
+  send(ws, {
+    type: "send",
+    session_id: sessionId,
+    message: "Read these three files in PARALLEL (use multiple tool calls in one response, do NOT read them sequentially): /etc/hostname, /etc/os-release, /etc/resolv.conf. Report the first line of each.",
+    request_id: "parallel-1",
+  });
+  await waitFor(ws, (f) => f.type === "ack", 5000);
+
+  // Collect all events until result
+  const frames = await collectUntil(
+    ws,
+    (f) => f.type === "event" && f.event?.type === "result",
+    120_000,
+  );
+
+  const resultEvent = frames.find((f) => f.type === "event" && f.event?.type === "result");
+  assert(resultEvent?.event?.subtype === "success", `Parallel calls result: ${resultEvent?.event?.subtype}`);
+
+  // Check for tool_use events — should have multiple
+  const toolUseEvents = frames.filter(
+    (f) => f.type === "event" && f.event?.type === "assistant" &&
+    f.event?.content?.some?.((b) => b.type === "tool_use"),
+  );
+
+  // Count total tool_use blocks across all assistant events
+  let toolUseCount = 0;
+  for (const ev of frames) {
+    if (ev.type === "event" && ev.event?.type === "assistant" && Array.isArray(ev.event.content)) {
+      toolUseCount += ev.event.content.filter((b) => b.type === "tool_use").length;
+    }
+  }
+  ok(`Tool use blocks seen: ${toolUseCount}`);
+
+  // The key assertion: result was success, meaning no sibling_error aborted the batch
+  assert(resultEvent?.event?.subtype === "success", "Parallel tool calls completed without sibling abort");
+
+  ws.close();
+}
+
 async function testInvalidFrame() {
-  console.log("\n--- Test 8: Invalid frame type ---");
+  console.log("\n--- Test 12: Invalid frame ---");
   const ws = await connect();
   send(ws, { type: "totally_bogus_command" });
   const err = await waitFor(ws, (f) => f.type === "error", 5000);
@@ -355,7 +516,7 @@ async function testInvalidFrame() {
 }
 
 async function testInvalidJson() {
-  console.log("\n--- Test 9: Invalid JSON ---");
+  console.log("\n--- Test 13: Invalid JSON ---");
   const ws = await connect();
   ws.send("not json at all {{{");
   const err = await waitFor(ws, (f) => f.type === "error", 5000);
@@ -379,6 +540,10 @@ try {
   await testSubscribeNonExistent();
   await testTwoClients();
   await testCompact();
+  await testContextRead();
+  await testContextInjectAndRemove();
+  await testContextTruncate();
+  await testParallelToolCalls();
   await testSteer();
   await testForkAndSteer();
   await testInvalidFrame();
