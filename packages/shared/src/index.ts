@@ -1,6 +1,6 @@
 // --- Common Types ---
 
-export type Model = "haiku" | "sonnet" | "opus";
+export type Model = "haiku" | "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]";
 
 export type SessionStatus = "starting" | "cloning" | "ready" | "busy" | "idle" | "stopped" | "error";
 
