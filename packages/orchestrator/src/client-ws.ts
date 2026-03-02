@@ -51,11 +51,21 @@ interface CompactFrame {
   request_id?: string;
 }
 
+interface PermissionResponseFrame {
+  type: "permission_response";
+  session_id: string;
+  tool_use_id: string;
+  behavior: "allow" | "deny" | "allowWithModification";
+  message?: string;
+  updated_input?: any;
+  request_id?: string;
+}
+
 interface PingFrame {
   type: "ping";
 }
 
-type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PingFrame;
+type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PermissionResponseFrame | PingFrame;
 
 // --- Server → Client frame types ---
 
@@ -192,6 +202,10 @@ function handleFrame(ws: WebSocket, frame: ClientFrame, ctx: HandleContext): voi
       handleCompact(ws, frame, ctx);
       return;
 
+    case "permission_response":
+      handlePermissionResponse(ws, frame as PermissionResponseFrame, ctx);
+      return;
+
     default:
       sendFrame(ws, {
         type: "error",
@@ -291,10 +305,27 @@ function handleSubscribe(ws: WebSocket, frame: SubscribeFrame, ctx: HandleContex
     });
   };
 
+  const onPermissionRequest = (msg: any) => {
+    sendFrame(ws, {
+      type: "permission_request",
+      session_id,
+      tool_name: msg.tool_name,
+      tool_use_id: msg.tool_use_id,
+      input: msg.input,
+    });
+    logger.debug("client-ws", "frame_out", {
+      direction: "out",
+      frame_type: "permission_request",
+      session_id,
+      tool_name: msg.tool_name,
+    });
+  };
+
   ctx.bridge.on(`status:${session_id}`, onStatus);
   ctx.bridge.on(`event:${session_id}`, onEvent);
   ctx.bridge.on(`error:${session_id}`, onError);
   ctx.bridge.on(`context_state:${session_id}`, onContextState);
+  ctx.bridge.on(`permission_request:${session_id}`, onPermissionRequest);
 
   // Store cleanup function
   const cleanup = () => {
@@ -302,6 +333,7 @@ function handleSubscribe(ws: WebSocket, frame: SubscribeFrame, ctx: HandleContex
     ctx.bridge.removeListener(`event:${session_id}`, onEvent);
     ctx.bridge.removeListener(`error:${session_id}`, onError);
     ctx.bridge.removeListener(`context_state:${session_id}`, onContextState);
+    ctx.bridge.removeListener(`permission_request:${session_id}`, onPermissionRequest);
   };
   ctx.subscriptions.set(session_id, cleanup);
 
@@ -450,6 +482,29 @@ function handleCompact(ws: WebSocket, frame: CompactFrame, ctx: HandleContext): 
 
   const sent = ctx.bridge.sendCompact(session_id, custom_instructions, ctx.requestId);
   sendFrame(ws, { type: "ack", session_id, ok: sent, request_id: ctx.requestId, ...(!sent ? { error: "Runner not connected" } : {}) });
+}
+
+// --- Permission Response ---
+
+function handlePermissionResponse(ws: WebSocket, frame: PermissionResponseFrame, ctx: HandleContext): void {
+  const { session_id, tool_use_id, behavior, message, updated_input } = frame;
+
+  const session = ctx.sessions.get(session_id);
+  if (!session) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session not found", request_id: ctx.requestId });
+    return;
+  }
+
+  const sent = ctx.bridge.sendPermissionResponse(session_id, tool_use_id, behavior, message, updated_input);
+  sendFrame(ws, { type: "ack", session_id, ok: sent, request_id: ctx.requestId, ...(!sent ? { error: "Runner not connected" } : {}) });
+
+  logger.event("client-ws", "permission_response_dispatched", {
+    session_id,
+    tool_use_id,
+    behavior,
+    ok: sent,
+    request_id: ctx.requestId,
+  });
 }
 
 // --- Helpers ---
