@@ -1,5 +1,4 @@
 import { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
 import { randomUUID } from "crypto";
 import { readFile } from "fs/promises";
 import { existsSync } from "fs";
@@ -703,75 +702,6 @@ export function createServer(ctx: AppContext): Hono {
     }
   });
 
-  // --- Sessions: Create + Run (SSE) ---
-
-  app.post("/sessions/stream", async (c) => {
-    const requestId = c.req.header("x-request-id") || randomUUID();
-    const body = await parseSessionRequest(c, ctx.sessions);
-    if ("error" in body) {
-      logger.warn("orchestrator.api", "invalid_stream_request", { error: body.error });
-      return c.json(body.error, body.status);
-    }
-
-    const sessionId = randomUUID();
-    let startupComplete = false;
-    logger.info("orchestrator.api", "create_session_stream_request", {
-      session_id: sessionId,
-      source: body.repo ? "repo" : body.workspace ? "workspace" : "ephemeral",
-      request_id: requestId,
-    });
-
-    return streamSSE(c, async (stream) => {
-      try {
-        await stream.writeSSE({ event: "session", data: JSON.stringify({ session_id: sessionId, status: "starting" }) });
-
-        await ensureCapacity(ctx);
-        await spawnSession(ctx, sessionId, body, requestId);
-
-        // Wait for ready, streaming status updates
-        await waitForReadyWithStream(ctx, sessionId, async (status) => {
-          logger.debug("orchestrator.api", "stream_session_status", { session_id: sessionId, status });
-          await stream.writeSSE({ event: "session", data: JSON.stringify({ session_id: sessionId, status }) });
-        }, undefined, requestId);
-        startupComplete = true;
-
-        // If no message, just signal ready and close
-        if (!body.message) return;
-
-        logger.debug("orchestrator.api", "create_session_stream_message_present", {
-          session_id: sessionId,
-          message_len: body.message.length,
-          model: body.model,
-        });
-        ctx.sessions.incrementMessages(sessionId);
-
-        // Send message and stream events
-        await sendAndStream(ctx, sessionId, body.message, { model: body.model, maxTurns: body.maxTurns }, async (event) => {
-          const eventType = mapEventType(event.type);
-          logger.debug("orchestrator.api", "stream_event", {
-            session_id: sessionId,
-            event_type: eventType,
-            event_subtype: event.subtype,
-          });
-          await stream.writeSSE({ event: eventType, data: JSON.stringify(event) });
-        });
-      } catch (err) {
-        if (isApiError(err)) {
-          logger.warn("orchestrator.api", "stream_api_error", { session_id: sessionId, code: err.code, message: err.message, request_id: requestId });
-          await stream.writeSSE({ event: "error", data: JSON.stringify({ code: err.code, message: err.message, session_id: sessionId }) });
-          return;
-        }
-        if (!startupComplete) {
-          await rollbackSession(ctx, sessionId, requestId);
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        const code = categorizeError(message);
-        logger.error("orchestrator.api", "stream_session_error", { session_id: sessionId, code, message, request_id: requestId });
-        await stream.writeSSE({ event: "error", data: JSON.stringify({ code, message, session_id: sessionId }) });
-      }
-    });
-  });
-
   // --- Messages: Follow-up (blocking) ---
 
   app.post("/sessions/:id/messages", async (c) => {
@@ -823,64 +753,6 @@ export function createServer(ctx: AppContext): Hono {
       logger.error("orchestrator.api", "send_message_error", { session_id: session.id, message });
       return c.json({ code: "agent_error", message } satisfies ErrorResponse, 500 as any);
     }
-  });
-
-  // --- Messages: Follow-up (SSE) ---
-
-  app.post("/sessions/:id/messages/stream", async (c) => {
-    const requestId = c.req.header("x-request-id") || randomUUID();
-    const session = ctx.sessions.get(c.req.param("id"));
-    if (!session) {
-      logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id"), context: "messages_stream" });
-      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
-    }
-    if (session.status === "busy") {
-      logger.warn("orchestrator.api", "session_busy", { session_id: session.id, context: "messages_stream" });
-      return c.json({ code: "session_busy", message: "Session is currently processing" } satisfies ErrorResponse, 409 as any);
-    }
-    if (session.status === "stopped" || session.status === "error") {
-      logger.warn("orchestrator.api", "session_stopped", { session_id: session.id, status: session.status, context: "messages_stream" });
-      return c.json({ code: "session_stopped", message: "Session has stopped" } satisfies ErrorResponse, 410 as any);
-    }
-
-    let body: MessageRequest;
-    try {
-      body = (await c.req.json()) as MessageRequest;
-    } catch {
-      logger.warn("orchestrator.api", "invalid_json", { session_id: session.id, endpoint: "/sessions/:id/messages/stream" });
-      return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
-    }
-
-    if (!body.message) {
-      logger.warn("orchestrator.api", "message_missing", { session_id: session.id, context: "messages_stream" });
-      return c.json({ code: "invalid_request", message: "Missing required field: message" } satisfies ErrorResponse, 400 as any);
-    }
-
-    ctx.sessions.incrementMessages(session.id);
-    logger.info("orchestrator.api", "send_message_stream", {
-      session_id: session.id,
-      message_len: body.message.length,
-      model: body.model,
-      request_id: requestId,
-    });
-
-    return streamSSE(c, async (stream) => {
-      try {
-        await sendAndStream(ctx, session.id, body.message, { model: body.model, maxTurns: body.maxTurns, requestId }, async (event) => {
-          const eventType = mapEventType(event.type);
-          logger.debug("orchestrator.api", "stream_event", {
-            session_id: session.id,
-            event_type: eventType,
-            event_subtype: event.subtype,
-          });
-          await stream.writeSSE({ event: eventType, data: JSON.stringify(event) });
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        logger.error("orchestrator.api", "send_message_stream_error", { session_id: session.id, message, request_id: requestId });
-        await stream.writeSSE({ event: "error", data: JSON.stringify({ code: "agent_error", message }) });
-      }
-    });
   });
 
   return app;
@@ -1018,48 +890,6 @@ function waitForReady(ctx: AppContext, sessionId: string, timeoutMs = 120_000, r
   });
 }
 
-async function waitForReadyWithStream(
-  ctx: AppContext,
-  sessionId: string,
-  onStatus: (status: string) => Promise<void>,
-  timeoutMs = 120_000,
-  requestId?: string
-): Promise<void> {
-  const session = ctx.sessions.get(sessionId);
-  if (session?.status === "ready") {
-    logger.debug("orchestrator.session", "wait_for_ready_with_stream_already_ready", { session_id: sessionId, request_id: requestId });
-    await onStatus("ready");
-    return;
-  }
-
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      logger.warn("orchestrator.session", "wait_for_ready_with_stream_timeout", { session_id: sessionId, request_id: requestId });
-      cleanup();
-      reject(new Error("Timed out waiting for runner to be ready"));
-    }, timeoutMs);
-
-    const handleStatus = async (status: string) => {
-      logger.debug("orchestrator.session", "wait_for_ready_status_stream", { session_id: sessionId, status, request_id: requestId });
-      await onStatus(status);
-      if (status === "ready") { cleanup(); resolve(); }
-    };
-    const handleError = (_code: string, message: string) => {
-      logger.warn("orchestrator.session", "wait_for_ready_with_stream_error", { session_id: sessionId, code: _code, message, request_id: requestId });
-      cleanup();
-      reject(new Error(message));
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ctx.bridge.removeListener(`status:${sessionId}`, handleStatus);
-      ctx.bridge.removeListener(`error:${sessionId}`, handleError);
-    };
-
-    ctx.bridge.on(`status:${sessionId}`, handleStatus);
-    ctx.bridge.on(`error:${sessionId}`, handleError);
-  });
-}
-
 function sendAndCollect(
   ctx: AppContext,
   sessionId: string,
@@ -1145,83 +975,6 @@ function sendAndCollect(
       reject(new Error("Runner not connected"));
     }
   });
-}
-
-async function sendAndStream(
-  ctx: AppContext,
-  sessionId: string,
-  message: string,
-  overrides: { model?: string; maxTurns?: number; requestId?: string } | undefined,
-  onStreamEvent: (event: RunnerEvent) => Promise<void>
-): Promise<void> {
-  logger.debug("orchestrator.session", "send_and_stream", {
-    session_id: sessionId,
-    model: overrides?.model,
-    max_turns: overrides?.maxTurns,
-    message_len: message.length,
-    request_id: overrides?.requestId,
-  });
-  return new Promise((resolve, reject) => {
-    const requestId = overrides?.requestId;
-    const traceId = getLogContext()?.traceId;
-    const timeout = setTimeout(() => {
-      logger.warn("orchestrator.session", "send_and_stream_timeout", {
-        session_id: sessionId,
-        timeout_ms: ctx.messageTimeoutMs,
-        request_id: requestId,
-      });
-      cleanup();
-      reject(new Error(`Timed out waiting for runner result after ${ctx.messageTimeoutMs}ms`));
-    }, ctx.messageTimeoutMs);
-
-    const onEvent = async (event: RunnerEvent) => {
-      logger.debug("orchestrator.session", "send_and_stream_event", {
-        session_id: sessionId,
-        event_type: event.type,
-        event_subtype: event.subtype,
-        request_id: requestId,
-      });
-      await onStreamEvent(event);
-      if (event.type === "result") {
-        cleanup();
-        const usage: Usage = {
-          input_tokens: event.usage?.input_tokens || 0,
-          output_tokens: event.usage?.output_tokens || 0,
-          cost_usd: event.usage?.cost_usd || 0,
-          duration_ms: event.usage?.duration_ms || 0,
-        };
-        ctx.sessions.addUsage(sessionId, usage);
-        logger.info("orchestrator.session", "send_and_stream_complete", { session_id: sessionId, usage, request_id: requestId });
-        resolve();
-      }
-    };
-    const onError = (_code: string, message: string) => {
-      logger.warn("orchestrator.session", "send_and_stream_error", { session_id: sessionId, code: _code, message, request_id: requestId });
-      cleanup(); reject(new Error(message));
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      ctx.bridge.removeListener(`event:${sessionId}`, onEvent);
-      ctx.bridge.removeListener(`error:${sessionId}`, onError);
-    };
-
-    ctx.bridge.on(`event:${sessionId}`, onEvent);
-    ctx.bridge.on(`error:${sessionId}`, onError);
-
-    const sent = ctx.bridge.sendMessage(sessionId, message, {
-      ...overrides,
-      requestId,
-      traceId,
-    });
-    if (!sent) {
-      cleanup();
-      reject(new Error("Runner not connected"));
-    }
-  });
-}
-
-function mapEventType(type: string): string {
-  return type;
 }
 
 function categorizeError(message: string): string {

@@ -7,6 +7,7 @@ import { DockerManager } from "./docker.js";
 import { WsBridge } from "./ws-bridge.js";
 import { TokenPool } from "./token-pool.js";
 import { openDb } from "./db.js";
+import { attachClientWs } from "./client-ws.js";
 import { logger } from "./logger.js";
 
 // --- Config ---
@@ -145,6 +146,7 @@ const idleSweep = setInterval(() => {
 async function shutdown() {
   logger.info("orchestrator.shutdown", "shutting_down");
   clearInterval(idleSweep);
+  clientWss.close();
   bridge.close();
   if (CLEANUP_RUNNERS_ON_EXIT) {
     logger.info("orchestrator.shutdown", "cleanup_runners_enabled");
@@ -163,7 +165,7 @@ process.on("SIGTERM", shutdown);
 
 // --- Start ---
 
-serve({ fetch: app.fetch, port: PORT }, (info) => {
+const httpServer = serve({ fetch: app.fetch, port: PORT }, (info) => {
   logger.info("orchestrator.server", "listening", {
     port: info.port,
     ws_port: WS_PORT,
@@ -182,3 +184,6 @@ serve({ fetch: app.fetch, port: PORT }, (info) => {
     cleanup_runners_on_exit: CLEANUP_RUNNERS_ON_EXIT,
   });
 });
+
+// Attach client-facing WebSocket on /ws path (same HTTP port)
+const clientWss = attachClientWs(httpServer, { bridge, sessions });
