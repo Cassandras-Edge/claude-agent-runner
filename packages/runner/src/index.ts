@@ -159,6 +159,7 @@ let activeResponse: ReturnType<typeof query> | null = null;
 // Pending steer: set by `steer` command, consumed by message handler after interrupt
 let pendingSteer: {
   message: string;
+  content?: any[];
   model?: string;
   maxTurns?: number;
   maxThinkingTokens?: number;
@@ -172,6 +173,7 @@ let pendingSteer: {
 // Pending fork-and-steer: set by `fork_and_steer` command, consumed after stream loop breaks
 let pendingForkAndSteer: {
   message: string;
+  content?: any[];
   model?: string;
   maxTurns?: number;
   maxThinkingTokens?: number;
@@ -327,7 +329,7 @@ async function ensureIpcConnected(): Promise<void> {
 
 async function runTurn(
   ws: WebSocket,
-  message: string,
+  message: string | any[],
   overrides?: {
     model?: string;
     maxTurns?: number;
@@ -362,8 +364,18 @@ async function runTurn(
     }
   }
 
-  // Send message to the session
-  await session.send(message);
+  // Send message to the session (string or content blocks)
+  if (Array.isArray(message)) {
+    // Multimodal: build SDKUserMessage with content blocks
+    await session.send({
+      type: "user",
+      message: { role: "user", content: message },
+      parent_tool_use_id: null,
+      session_id: sdkSessionId || "",
+    } as any);
+  } else {
+    await session.send(message);
+  }
 
   let eventCount = 0;
   let firstEventTimeoutTriggered = false;
@@ -909,7 +921,7 @@ function connect(): void {
         forceCompactOnNextQuery = false;
         pendingCompactInstructions = undefined;
 
-        let currentMessage = msg.message;
+        let currentMessage: string | any = msg.content || msg.message;
         let currentModel = msg.model;
         let currentMaxTurns = msg.maxTurns;
         let currentMaxThinkingTokens = msg.maxThinkingTokens;
@@ -1067,6 +1079,7 @@ function connect(): void {
               // Fall back to normal steer behavior
               pendingSteer = {
                 message: forkReq.message,
+                content: forkReq.content,
                 model: forkReq.model,
                 maxTurns: forkReq.maxTurns,
                 requestId: forkReq.requestId,
@@ -1076,7 +1089,7 @@ function connect(): void {
 
             // Continue the while loop with the forked session and user's message
             if (!pendingSteer) {
-              currentMessage = forkReq.message;
+              currentMessage = forkReq.content || forkReq.message;
               currentModel = forkReq.model;
               currentMaxTurns = forkReq.maxTurns;
               currentMaxThinkingTokens = forkReq.maxThinkingTokens;
@@ -1126,7 +1139,7 @@ function connect(): void {
             }));
           }
 
-          currentMessage = steer.message;
+          currentMessage = steer.content || steer.message;
           currentModel = steer.model;
           currentMaxTurns = steer.maxTurns;
           currentMaxThinkingTokens = steer.maxThinkingTokens;
@@ -1185,6 +1198,7 @@ function connect(): void {
         // Mid-turn steer: set pending — the stream loop will pick it up
         pendingSteer = {
           message: steerMsg.message,
+          content: (steerMsg as any).content,
           model: steerMsg.model,
           maxTurns: steerMsg.maxTurns,
           maxThinkingTokens: steerMsg.maxThinkingTokens,
@@ -1266,6 +1280,7 @@ function connect(): void {
         // Mid-turn: set pending — the stream loop will pick it up and fork
         pendingForkAndSteer = {
           message: fasMsg.message,
+          content: (fasMsg as any).content,
           model: fasMsg.model,
           maxTurns: fasMsg.maxTurns,
           maxThinkingTokens: (fasMsg as any).maxThinkingTokens,

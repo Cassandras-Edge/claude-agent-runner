@@ -2,6 +2,11 @@
 
 export type Model = "haiku" | "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]";
 
+/** Content block for multimodal messages (text + images). */
+export type UserContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+
 export type SessionStatus = "starting" | "cloning" | "ready" | "busy" | "idle" | "stopped" | "error";
 
 export type ErrorCode =
@@ -207,6 +212,8 @@ export type RunnerMessage =
 export interface OrchestratorMessageCommand extends WsCorrelation {
   type: "message";
   message: string;
+  /** Multimodal content blocks (text + images). When present, overrides `message`. */
+  content?: UserContentBlock[];
   model?: string;
   maxTurns?: number;
   maxThinkingTokens?: number;
@@ -241,6 +248,8 @@ export interface OrchestratorSteerCommand extends WsCorrelation {
   type: "steer";
   /** Message to send as the next user turn after aborting */
   message: string;
+  /** Multimodal content blocks (text + images). When present, overrides `message`. */
+  content?: UserContentBlock[];
   /** Model override for the resumed query */
   model?: string;
   /** Max turns for the resumed query */
@@ -260,6 +269,8 @@ export interface OrchestratorForkAndSteerCommand extends WsCorrelation {
   type: "fork_and_steer";
   /** Message to send as the next user turn in the forked foreground session */
   message: string;
+  /** Multimodal content blocks (text + images). When present, overrides `message`. */
+  content?: UserContentBlock[];
   /** Model override for the forked session */
   model?: string;
   /** Max turns for the forked session */

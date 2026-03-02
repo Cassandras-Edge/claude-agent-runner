@@ -24,6 +24,8 @@ interface SendFrame {
   type: "send";
   session_id: string;
   message: string;
+  /** Multimodal content blocks (text + images). When present, overrides `message`. */
+  content?: Array<{ type: string; [key: string]: any }>;
   model?: string;
   max_turns?: number;
   max_thinking_tokens?: number;
@@ -34,6 +36,8 @@ interface SteerFrame {
   type: "steer";
   session_id: string;
   message: string;
+  /** Multimodal content blocks (text + images). When present, overrides `message`. */
+  content?: Array<{ type: string; [key: string]: any }>;
   mode?: "steer" | "fork_and_steer";
   model?: string;
   max_turns?: number;
@@ -405,7 +409,7 @@ function handleUnsubscribe(ws: WebSocket, frame: UnsubscribeFrame, ctx: HandleCo
 // --- Send ---
 
 function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
-  const { session_id, message, model, max_turns, max_thinking_tokens } = frame;
+  const { session_id, message, content, model, max_turns, max_thinking_tokens } = frame;
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
@@ -423,6 +427,7 @@ function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
 
   ctx.sessions.incrementMessages(session_id);
   const sent = ctx.bridge.sendMessage(session_id, message, {
+    content,
     model,
     maxTurns: max_turns,
     maxThinkingTokens: max_thinking_tokens,
@@ -434,7 +439,7 @@ function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
 
   logger.event("client-ws", "send_dispatched", {
     session_id,
-    message_len: message.length,
+    message_len: content ? JSON.stringify(content).length : message.length,
     model,
     ok: sent,
     request_id: ctx.requestId,
@@ -444,7 +449,7 @@ function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
 // --- Steer ---
 
 function handleSteer(ws: WebSocket, frame: SteerFrame, ctx: HandleContext): void {
-  const { session_id, message, mode = "steer", model, max_turns, max_thinking_tokens, compact, compact_instructions, operations } = frame;
+  const { session_id, message, content, mode = "steer", model, max_turns, max_thinking_tokens, compact, compact_instructions, operations } = frame;
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
@@ -459,6 +464,7 @@ function handleSteer(ws: WebSocket, frame: SteerFrame, ctx: HandleContext): void
   let sent: boolean;
   if (mode === "fork_and_steer") {
     sent = ctx.bridge.sendForkAndSteer(session_id, message, {
+      content,
       model,
       maxTurns: max_turns,
       maxThinkingTokens: max_thinking_tokens,
@@ -467,6 +473,7 @@ function handleSteer(ws: WebSocket, frame: SteerFrame, ctx: HandleContext): void
     });
   } else {
     sent = ctx.bridge.sendSteer(session_id, message, {
+      content,
       model,
       maxTurns: max_turns,
       maxThinkingTokens: max_thinking_tokens,
