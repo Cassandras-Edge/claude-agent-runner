@@ -27,6 +27,9 @@ export interface SpawnConfig {
   disallowedTools?: string[];
   additionalDirectories?: string[];
   compactInstructions?: string;
+  permissionMode?: string;
+  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  allowedPaths?: string[];
   forkFrom?: string;
   forkAt?: string;
   forkSession?: boolean;
@@ -90,6 +93,13 @@ export class DockerManager {
       envVars.push(`RUNNER_ADDITIONAL_DIRECTORIES=${JSON.stringify(config.additionalDirectories)}`);
     }
     if (config.compactInstructions) envVars.push(`RUNNER_COMPACT_INSTRUCTIONS=${config.compactInstructions}`);
+    if (config.permissionMode) envVars.push(`RUNNER_PERMISSION_MODE=${config.permissionMode}`);
+    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+      envVars.push(`RUNNER_MCP_SERVERS=${JSON.stringify(config.mcpServers)}`);
+    }
+    if (config.allowedPaths?.length) {
+      envVars.push(`RUNNER_ALLOWED_PATHS=${JSON.stringify(config.allowedPaths)}`);
+    }
     if (config.forkFrom) envVars.push(`RUNNER_FORK_FROM=${config.forkFrom}`);
     if (config.forkAt) envVars.push(`RUNNER_FORK_AT=${config.forkAt}`);
     if (config.forkSession) envVars.push(`RUNNER_FORK_SESSION=true`);

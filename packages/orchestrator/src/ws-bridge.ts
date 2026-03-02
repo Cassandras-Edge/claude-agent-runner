@@ -111,6 +111,15 @@ export class WsBridge extends EventEmitter {
             this.emit(`context_result:${sessionId}:${(msg as any).request_id}`, msg);
             break;
 
+          case "permission_request":
+            logger.debug("orchestrator.ws_bridge", "runner_permission_request", {
+              session_id: sessionId,
+              tool_name: (msg as any).tool_name,
+              tool_use_id: (msg as any).tool_use_id,
+            });
+            this.emit(`permission_request:${sessionId}`, msg);
+            break;
+
           case "context_snapshot": {
             const snap = msg as RunnerContextSnapshotMessage;
             logger.info("orchestrator.ws_bridge", "runner_context_snapshot", {
@@ -343,6 +352,33 @@ export class WsBridge extends EventEmitter {
       };
       this.on(eventKey, onResult);
     });
+  }
+
+  sendPermissionResponse(
+    sessionId: string,
+    toolUseId: string,
+    behavior: string,
+    message?: string,
+    updatedInput?: any,
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_permission_response", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "permission_response",
+      tool_use_id: toolUseId,
+      behavior,
+      ...(message ? { message } : {}),
+      ...(updatedInput !== undefined ? { updated_input: updatedInput } : {}),
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_permission_response", {
+      session_id: sessionId,
+      tool_use_id: toolUseId,
+      behavior,
+    });
+    return true;
   }
 
   /** Attach a database reference for persisting snapshots. */

@@ -41,6 +41,9 @@ export interface SessionRequest {
   disallowedTools?: string[];
   additionalDirectories?: string[];
   compactInstructions?: string;
+  permissionMode?: string;
+  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  allowedPaths?: string[];
 }
 
 export interface MessageRequest {
@@ -182,6 +185,14 @@ export interface RunnerContextSnapshotMessage extends WsCorrelation {
   messages: any[];
 }
 
+export interface RunnerPermissionRequestMessage extends WsCorrelation {
+  type: "permission_request";
+  session_id: string;
+  tool_name: string;
+  tool_use_id: string;
+  input: any;
+}
+
 export type RunnerMessage =
   | RunnerStatusMessage
   | RunnerEventMessage
@@ -189,7 +200,8 @@ export type RunnerMessage =
   | RunnerSessionInitMessage
   | RunnerContextStateMessage
   | RunnerContextResultMessage
-  | RunnerContextSnapshotMessage;
+  | RunnerContextSnapshotMessage
+  | RunnerPermissionRequestMessage;
 
 /** Orchestrator → Runner: send a message to the agent */
 export interface OrchestratorMessageCommand extends WsCorrelation {
@@ -256,13 +268,23 @@ export interface OrchestratorForkAndSteerCommand extends WsCorrelation {
   maxThinkingTokens?: number;
 }
 
+/** Orchestrator → Runner: respond to a permission request from canUseTool callback */
+export interface OrchestratorPermissionResponseCommand extends WsCorrelation {
+  type: "permission_response";
+  tool_use_id: string;
+  behavior: "allow" | "deny" | "allowWithModification";
+  message?: string;
+  updated_input?: any;
+}
+
 export type OrchestratorCommand =
   | OrchestratorMessageCommand
   | OrchestratorShutdownCommand
   | OrchestratorCompactCommand
   | OrchestratorContextCommand
   | OrchestratorSteerCommand
-  | OrchestratorForkAndSteerCommand;
+  | OrchestratorForkAndSteerCommand
+  | OrchestratorPermissionResponseCommand;
 
 // --- Context Snapshot Types ---
 

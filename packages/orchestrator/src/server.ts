@@ -822,6 +822,9 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       disallowedTools: body.disallowedTools,
       additionalDirectories: body.additionalDirectories,
       compactInstructions: body.compactInstructions,
+      permissionMode: body.permissionMode,
+      mcpServers: body.mcpServers,
+      allowedPaths: body.allowedPaths,
     });
 
     const session = ctx.sessions.create(sessionId, containerId, tokenIndex, {

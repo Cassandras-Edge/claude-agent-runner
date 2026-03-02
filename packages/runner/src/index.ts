@@ -8,7 +8,7 @@ import type { SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-s
 import { execSync } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
-import type { OrchestratorCommand, OrchestratorForkAndSteerCommand, ContextOperation } from "@claude-agent-runner/shared";
+import type { OrchestratorCommand, OrchestratorForkAndSteerCommand, OrchestratorPermissionResponseCommand, ContextOperation } from "@claude-agent-runner/shared";
 import {
   readSessionChain,
   removeMessage,
@@ -45,6 +45,13 @@ const ADDITIONAL_DIRECTORIES: string[] = process.env.RUNNER_ADDITIONAL_DIRECTORI
   ? JSON.parse(process.env.RUNNER_ADDITIONAL_DIRECTORIES)
   : [];
 const COMPACT_INSTRUCTIONS = process.env.RUNNER_COMPACT_INSTRUCTIONS;
+const PERMISSION_MODE = process.env.RUNNER_PERMISSION_MODE || "bypassPermissions";
+const MCP_SERVERS: Record<string, { command: string; args?: string[] }> = process.env.RUNNER_MCP_SERVERS
+  ? JSON.parse(process.env.RUNNER_MCP_SERVERS)
+  : {};
+const ALLOWED_PATHS: string[] = process.env.RUNNER_ALLOWED_PATHS
+  ? JSON.parse(process.env.RUNNER_ALLOWED_PATHS)
+  : [];
 const FORK_FROM = process.env.RUNNER_FORK_FROM;
 const FORK_AT = process.env.RUNNER_FORK_AT;
 const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
@@ -178,9 +185,12 @@ type BackgroundSession = {
 };
 const backgroundSessions: Map<string, BackgroundSession> = new Map();
 
+// Pending permission requests: tool_use_id → resolve callback
+const pendingPermissionRequests = new Map<string, (result: { behavior: string; message?: string; updatedInput?: any }) => void>();
+
 // --- V2 Session creation ---
 
-function buildSessionOptions(forceCompact = false): SDKSessionOptions & Record<string, any> {
+function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSessionOptions & Record<string, any> {
   const childEnv = buildClaudeChildEnv(forceCompact);
 
   const effectiveCompactInstructions = COMPACT_INSTRUCTIONS;
@@ -194,12 +204,36 @@ function buildSessionOptions(forceCompact = false): SDKSessionOptions & Record<s
     }];
   }
 
+  // Path restriction hook: deny file operations outside allowed directories
+  if (ALLOWED_PATHS.length > 0) {
+    const pathToolNames = new Set(["Read", "Write", "Edit", "Bash", "Glob", "Grep"]);
+    hooks.PreToolUse = hooks.PreToolUse || [];
+    hooks.PreToolUse.push({
+      hooks: [async (toolName: string, input: any) => {
+        if (!pathToolNames.has(toolName)) return { continue: true };
+        // Extract file path from common input field names
+        const filePath = input?.file_path || input?.path || input?.command;
+        if (!filePath || typeof filePath !== "string") return { continue: true };
+        const isAllowed = ALLOWED_PATHS.some((p: string) => filePath.startsWith(p));
+        if (!isAllowed) {
+          return {
+            continue: false,
+            message: `Path "${filePath}" is outside allowed directories: ${ALLOWED_PATHS.join(", ")}`,
+          };
+        }
+        return { continue: true };
+      }],
+    });
+  }
+
+  const isBypass = PERMISSION_MODE === "bypassPermissions";
+
   const opts: SDKSessionOptions & Record<string, any> = {
     model: MODEL,
     env: childEnv,
     ...(ALLOWED_TOOLS.length > 0 ? { allowedTools: ALLOWED_TOOLS } : {}),
     ...(DISALLOWED_TOOLS.length > 0 ? { disallowedTools: DISALLOWED_TOOLS } : {}),
-    permissionMode: "bypassPermissions" as any,
+    permissionMode: PERMISSION_MODE as any,
     ...(Object.keys(hooks).length > 0 ? { hooks } : {}),
     ...(PATCHED_CLI_PATH ? { pathToClaudeCodeExecutable: PATCHED_CLI_PATH, executable: "bun" as const } : {}),
     // Extended options — passed through to CLI args by SDK if supported
@@ -211,16 +245,39 @@ function buildSessionOptions(forceCompact = false): SDKSessionOptions & Record<s
     includePartialMessages: true,
     persistSession: true,
     enableFileCheckpointing: true,
-    allowDangerouslySkipPermissions: true,
+    allowDangerouslySkipPermissions: isBypass,
     settingSources: ["project"],
     ...(ADDITIONAL_DIRECTORIES.length > 0 ? { additionalDirectories: ADDITIONAL_DIRECTORIES } : {}),
+    ...(Object.keys(MCP_SERVERS).length > 0 ? { mcpServers: MCP_SERVERS } : {}),
   };
+
+  // Permission callback: forward permission requests to orchestrator via WS
+  if (!isBypass && ws) {
+    opts.canUseTool = async (toolName: string, input: any, options: { signal: AbortSignal }) => {
+      const toolUseId = randomUUID();
+      ws.send(JSON.stringify({
+        type: "permission_request",
+        session_id: SESSION_ID,
+        tool_name: toolName,
+        tool_use_id: toolUseId,
+        input,
+      }));
+
+      return new Promise<any>((resolve, reject) => {
+        options.signal.addEventListener("abort", () => {
+          pendingPermissionRequests.delete(toolUseId);
+          reject(new Error("Permission request aborted"));
+        });
+        pendingPermissionRequests.set(toolUseId, resolve);
+      });
+    };
+  }
 
   return opts;
 }
 
-async function createOrResumeSession(): Promise<SDKSession> {
-  const opts = buildSessionOptions();
+async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession> {
+  const opts = buildSessionOptions(false, ws);
 
   if (FORK_FROM && !sdkSessionId) {
     // Fork from parent session
@@ -290,7 +347,7 @@ async function runTurn(
   // Create or resume V2 session if not yet established
   if (!session) {
     try {
-      session = await createOrResumeSession();
+      session = await createOrResumeSession(ws);
       logger.info("runner.session", "session_created");
     } catch (err) {
       logger.error("runner.session", "session_create_failed", {
@@ -958,7 +1015,7 @@ function connect(): void {
               });
 
               session = await unstable_v2_resumeSession(oldSdkSessionId, {
-                ...buildSessionOptions(),
+                ...buildSessionOptions(false, ws),
                 forkSession: true,
               } as any);
 
@@ -1286,6 +1343,30 @@ function connect(): void {
             request_id: requestId,
           }));
         }
+      }
+      return;
+    }
+
+    if (msg.type === "permission_response") {
+      const permMsg = msg as OrchestratorPermissionResponseCommand;
+      const resolver = pendingPermissionRequests.get(permMsg.tool_use_id);
+      if (resolver) {
+        pendingPermissionRequests.delete(permMsg.tool_use_id);
+        resolver({
+          behavior: permMsg.behavior,
+          message: permMsg.message,
+          updatedInput: permMsg.updated_input,
+        });
+        logger.debug("runner.ws", "permission_response_resolved", {
+          session_id: SESSION_ID,
+          tool_use_id: permMsg.tool_use_id,
+          behavior: permMsg.behavior,
+        });
+      } else {
+        logger.warn("runner.ws", "permission_response_no_pending_request", {
+          session_id: SESSION_ID,
+          tool_use_id: permMsg.tool_use_id,
+        });
       }
       return;
     }
