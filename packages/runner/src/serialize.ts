@@ -15,6 +15,7 @@ export function serializeEvent(event: any): any {
       uuid: event.uuid,
       session_id: event.session_id,
       parent_tool_use_id: event.parent_tool_use_id,
+      usage: event.message?.usage,
       content: blocks.map((b: any) => {
         if (b.type === "text") return { type: "text", text: b.text };
         if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b.input };

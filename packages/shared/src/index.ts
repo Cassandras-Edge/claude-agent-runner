@@ -197,6 +197,7 @@ export interface OrchestratorMessageCommand extends WsCorrelation {
   message: string;
   model?: string;
   maxTurns?: number;
+  maxThinkingTokens?: number;
 }
 
 /** Orchestrator → Runner: graceful shutdown */
@@ -232,6 +233,8 @@ export interface OrchestratorSteerCommand extends WsCorrelation {
   model?: string;
   /** Max turns for the resumed query */
   maxTurns?: number;
+  /** Max thinking tokens for the resumed query */
+  maxThinkingTokens?: number;
   /** If true, force compaction on the resume query */
   compact?: boolean;
   /** Optional custom compact instructions for the resume */
@@ -249,6 +252,8 @@ export interface OrchestratorForkAndSteerCommand extends WsCorrelation {
   model?: string;
   /** Max turns for the forked session */
   maxTurns?: number;
+  /** Max thinking tokens for the forked session */
+  maxThinkingTokens?: number;
 }
 
 export type OrchestratorCommand =

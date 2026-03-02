@@ -26,6 +26,7 @@ interface SendFrame {
   message: string;
   model?: string;
   max_turns?: number;
+  max_thinking_tokens?: number;
   request_id?: string;
 }
 
@@ -36,6 +37,7 @@ interface SteerFrame {
   mode?: "steer" | "fork_and_steer";
   model?: string;
   max_turns?: number;
+  max_thinking_tokens?: number;
   compact?: boolean;
   compact_instructions?: string;
   operations?: any[];
@@ -347,7 +349,7 @@ function handleUnsubscribe(ws: WebSocket, frame: UnsubscribeFrame, ctx: HandleCo
 // --- Send ---
 
 function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
-  const { session_id, message, model, max_turns } = frame;
+  const { session_id, message, model, max_turns, max_thinking_tokens } = frame;
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
@@ -367,6 +369,7 @@ function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
   const sent = ctx.bridge.sendMessage(session_id, message, {
     model,
     maxTurns: max_turns,
+    maxThinkingTokens: max_thinking_tokens,
     requestId: ctx.requestId,
     traceId: ctx.connectionId,
   });
@@ -385,7 +388,7 @@ function handleSend(ws: WebSocket, frame: SendFrame, ctx: HandleContext): void {
 // --- Steer ---
 
 function handleSteer(ws: WebSocket, frame: SteerFrame, ctx: HandleContext): void {
-  const { session_id, message, mode = "steer", model, max_turns, compact, compact_instructions, operations } = frame;
+  const { session_id, message, mode = "steer", model, max_turns, max_thinking_tokens, compact, compact_instructions, operations } = frame;
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
@@ -402,6 +405,7 @@ function handleSteer(ws: WebSocket, frame: SteerFrame, ctx: HandleContext): void
     sent = ctx.bridge.sendForkAndSteer(session_id, message, {
       model,
       maxTurns: max_turns,
+      maxThinkingTokens: max_thinking_tokens,
       requestId: ctx.requestId,
       traceId: ctx.connectionId,
     });
@@ -409,6 +413,7 @@ function handleSteer(ws: WebSocket, frame: SteerFrame, ctx: HandleContext): void
     sent = ctx.bridge.sendSteer(session_id, message, {
       model,
       maxTurns: max_turns,
+      maxThinkingTokens: max_thinking_tokens,
       compact,
       compactInstructions: compact_instructions,
       operations,
