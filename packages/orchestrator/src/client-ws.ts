@@ -81,11 +81,17 @@ interface SetOptionsFrame {
   request_id?: string;
 }
 
+interface GetCommandsFrame {
+  type: "get_commands";
+  session_id: string;
+  request_id?: string;
+}
+
 interface PingFrame {
   type: "ping";
 }
 
-type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PermissionResponseFrame | RewindFrame | SetOptionsFrame | PingFrame;
+type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PermissionResponseFrame | RewindFrame | SetOptionsFrame | GetCommandsFrame | PingFrame;
 
 // --- Server → Client frame types ---
 
@@ -232,6 +238,10 @@ function handleFrame(ws: WebSocket, frame: ClientFrame, ctx: HandleContext): voi
 
     case "set_options":
       handleSetOptions(ws, frame as SetOptionsFrame, ctx);
+      return;
+
+    case "get_commands":
+      handleGetCommands(ws, frame as GetCommandsFrame, ctx);
       return;
 
     default:
@@ -590,6 +600,31 @@ function handlePermissionResponse(ws: WebSocket, frame: PermissionResponseFrame,
     behavior,
     ok: sent,
     request_id: ctx.requestId,
+  });
+}
+
+// --- Get Commands ---
+
+function handleGetCommands(ws: WebSocket, frame: GetCommandsFrame, ctx: HandleContext): void {
+  const { session_id } = frame;
+
+  const session = ctx.sessions.get(session_id);
+  if (!session) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session not found", request_id: ctx.requestId });
+    return;
+  }
+
+  const sent = ctx.bridge.sendGetCommands(session_id, ctx.requestId, ctx.connectionId);
+  if (!sent) {
+    sendFrame(ws, { type: "commands_result", session_id, commands: [], request_id: ctx.requestId });
+    return;
+  }
+
+  // Wait for the runner's response and forward it to the client
+  ctx.bridge.waitForCommandsResult(session_id, ctx.requestId).then((result) => {
+    sendFrame(ws, { type: "commands_result", session_id, commands: result.commands || [], request_id: ctx.requestId });
+  }).catch(() => {
+    sendFrame(ws, { type: "commands_result", session_id, commands: [], request_id: ctx.requestId });
   });
 }
 
