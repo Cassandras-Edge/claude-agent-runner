@@ -1,9 +1,17 @@
 {
   "id": "webfetch-skip-haiku",
-  "type": "replacement",
   "disabled": true,
   "description": "Skip Haiku summarization in WebFetch — return raw markdown directly",
-  "find": "else C=await ufB(R,$,A.signal,_,J)",
-  "replace": "else C=$",
-  "target": "both"
+  "target": "both",
+  "tested_versions": ["2.1.63"],
+  "steps": [
+    {
+      "type": "find_replace",
+      "id": "skip_haiku",
+      "find": "else C=await ufB(R,$,A.signal,_,J)",
+      "replace": "else C=$",
+      "mode": "literal",
+      "pad_to_length": true
+    }
+  ]
 }

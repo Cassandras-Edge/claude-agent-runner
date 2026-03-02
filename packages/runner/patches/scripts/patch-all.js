@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
 /**
- * Unified Claude Code patcher.
+ * Unified Claude Code patcher — v2 step-based engine.
  *
- * Extracts cli.js from the binary, applies all patches, and produces:
+ * Extracts cli.js from the binary, applies all patches via the step engine,
+ * and produces:
  *   dist/cli-patched.js   — for SDK (pathToClaudeCodeExecutable)
  *   dist/claude-patched    — patched binary for CLI usage
  *   dist/metadata.json     — version + patch manifest
@@ -22,16 +23,14 @@ import {
   findBinary,
   getVersion,
   extractJS,
-  applyReplacement,
   applyReplacementBinary,
-  applyInsertion,
-  resolveTemplate,
   backupBinary,
   restoreBinary,
   codesign,
   verify,
   checksum,
 } from "../lib/patcher.js";
+import { applyPatch } from "../lib/engine.js";
 
 const ROOT = dirname(dirname(import.meta.path));
 const PATCHES_DIR = join(ROOT, "patches");
@@ -82,27 +81,21 @@ function loadPatches() {
 
     const spec = JSON.parse(readFileSync(specPath, "utf-8"));
 
-    // For insertion patches, load the code file
-    if (spec.type === "insertion" && spec.codeFile) {
-      const codePath = join(PATCHES_DIR, dir, spec.codeFile);
-      if (!existsSync(codePath)) {
-        console.error(`Missing code file: ${codePath}`);
-        process.exit(1);
-      }
-      spec._code = readFileSync(codePath, "utf-8");
-    }
-
-    // For template patches, load the template code file
-    if (spec.type === "template" && spec.codeFile) {
-      const codePath = join(PATCHES_DIR, dir, spec.codeFile);
-      if (!existsSync(codePath)) {
-        console.error(`Missing template file: ${codePath}`);
-        process.exit(1);
-      }
-      spec._templateCode = readFileSync(codePath, "utf-8");
-    }
-
     if (spec.disabled) continue;
+
+    // Resolve code_file references in steps
+    if (spec.steps) {
+      for (const step of spec.steps) {
+        if (step.code_file) {
+          const codePath = join(PATCHES_DIR, dir, step.code_file);
+          if (!existsSync(codePath)) {
+            console.error(`Missing code file: ${codePath}`);
+            process.exit(1);
+          }
+          step.code = readFileSync(codePath, "utf-8");
+        }
+      }
+    }
 
     spec._dir = dir;
     patches.push(spec);
@@ -115,6 +108,7 @@ function loadPatches() {
 
 const binaryPath = customBinary || findBinary();
 const version = getVersion(binaryPath);
+const cliVersion = version.replace(/^.*?(\d+\.\d+\.\d+).*$/, "$1");
 console.log(`Binary: ${binaryPath}`);
 console.log(`Version: ${version}`);
 
@@ -125,14 +119,13 @@ if (patches.length === 0) {
 }
 console.log(`\nFound ${patches.length} patch(es):`);
 for (const p of patches) {
-  console.log(`  - ${p.id} (${p.type}, target: ${p.target})`);
+  console.log(`  - ${p.id} (${p.steps.length} step(s), target: ${p.target})`);
 }
 
 // ── Extract JS ────────────────────────────────────────────────────────────
 
 let jsContent;
 if (binaryPath.endsWith(".js")) {
-  // npm-installed on Linux: cli.js is already plain JavaScript
   console.log("\nReading cli.js directly (npm-installed, not a compiled binary)...");
   jsContent = readFileSync(binaryPath, "utf-8");
   console.log(`  Read ${(jsContent.length / 1024 / 1024).toFixed(1)} MB`);
@@ -142,50 +135,25 @@ if (binaryPath.endsWith(".js")) {
   console.log(`  Extracted ${(jsContent.length / 1024 / 1024).toFixed(1)} MB`);
 }
 
-// ── Apply patches to JS ──────────────────────────────────────────────────
+// ── Apply patches to JS via step engine ───────────────────────────────────
 
 console.log("\nApplying patches to JS:");
 const applied = [];
-
-// Replacements first (order matters less, but be consistent)
 const skipped = [];
-for (const p of patches.filter(p => p.type === "replacement")) {
-  const result = applyReplacement(jsContent, p.find, p.replace);
-  if (result.occurrences === 0) {
-    console.error(`  SKIP: ${p.id} — pattern not found in JS`);
-    skipped.push(p.id);
-    continue;
-  }
-  jsContent = result.content;
-  applied.push({ ...p, occurrences: result.occurrences });
-  console.log(`  ${p.id}: ${result.occurrences} occurrence(s)`);
-}
 
-// Then insertions
-for (const p of patches.filter(p => p.type === "insertion")) {
+for (const spec of patches) {
   try {
-    const result = applyInsertion(jsContent, p.insertAfter, p._code);
+    const result = await applyPatch(jsContent, spec, { cliVersion });
     jsContent = result.content;
-    applied.push({ ...p, position: result.position });
-    console.log(`  ${p.id}: inserted at position ${result.position}`);
-  } catch (e) {
-    console.error(`  SKIP: ${p.id} — ${e.message}`);
-    skipped.push(p.id);
-  }
-}
+    applied.push({ id: spec.id, target: spec.target, description: spec.description, vars: result.vars });
 
-// Then templates (resolve variables from structural patterns, then insert)
-for (const p of patches.filter(p => p.type === "template")) {
-  try {
-    const resolved = resolveTemplate(jsContent, p);
-    const result = applyInsertion(jsContent, resolved.insertAfter, resolved.code);
-    jsContent = result.content;
-    applied.push({ ...p, position: result.position, vars: resolved.vars });
-    console.log(`  ${p.id}: resolved vars: ${JSON.stringify(resolved.vars)}`);
-    console.log(`  ${p.id}: inserted at position ${result.position}`);
+    // Show step results
+    for (const s of result.diag.steps) {
+      if (s.detail) console.log(`  ${spec.id}/${s.id}: ${s.detail}`);
+    }
   } catch (e) {
-    console.error(`  SKIP: ${p.id} — ${e.message}`);
-    skipped.push(p.id);
+    console.error(`  SKIP: ${spec.id} — ${e.message}`);
+    skipped.push(spec.id);
   }
 }
 
@@ -196,14 +164,32 @@ if (!jsOnly) {
   console.log("\nApplying replacement patches to binary copy...");
   binaryBuf = Buffer.from(readFileSync(binaryPath));
 
-  for (const p of patches.filter(p => p.type === "replacement" && p.target === "both")) {
-    if (skipped.includes(p.id)) continue;
-    const result = applyReplacementBinary(binaryBuf, p.find, p.replace);
-    if (result.occurrences === 0) {
-      console.error(`  SKIP: ${p.id} — pattern not found in binary`);
-      continue;
+  for (const spec of patches) {
+    if (spec.target !== "both") continue;
+    if (skipped.includes(spec.id)) continue;
+
+    // For binary, only apply find_replace steps with pad_to_length
+    for (const step of spec.steps) {
+      if (step.type !== "find_replace") continue;
+
+      let find = step.find;
+      let replace = step.replace;
+      // Interpolate vars from applied result
+      const appliedEntry = applied.find(a => a.id === spec.id);
+      if (appliedEntry?.vars) {
+        for (const [k, v] of Object.entries(appliedEntry.vars)) {
+          find = find.replaceAll(`{{${k}}}`, v);
+          replace = replace.replaceAll(`{{${k}}}`, v);
+        }
+      }
+
+      const result = applyReplacementBinary(binaryBuf, find, replace);
+      if (result.occurrences === 0) {
+        console.error(`  SKIP: ${spec.id}/${step.id} — pattern not found in binary`);
+        continue;
+      }
+      console.log(`  ${spec.id}/${step.id}: ${result.occurrences} occurrence(s) in binary`);
     }
-    console.log(`  ${p.id}: ${result.occurrences} occurrence(s) in binary`);
   }
 }
 
@@ -211,6 +197,11 @@ if (!jsOnly) {
 
 if (dryRun) {
   console.log("\n--dry-run: no files written");
+  if (skipped.length > 0) {
+    console.log(`\nSkipped ${skipped.length} patch(es): ${skipped.join(", ")}`);
+    process.exit(1);
+  }
+  console.log(`\nDone. Applied ${applied.length}/${patches.length} patches.`);
   process.exit(0);
 }
 
@@ -246,12 +237,9 @@ const metadata = {
   jsOnly,
   patches: applied.map(p => ({
     id: p.id,
-    type: p.type,
     target: p.target,
     description: p.description,
-    ...(p.occurrences !== undefined && { occurrences: p.occurrences }),
-    ...(p.position !== undefined && { position: p.position }),
-    ...(p.vars !== undefined && { vars: p.vars }),
+    ...(Object.keys(p.vars || {}).length > 0 && { vars: p.vars }),
   })),
   skipped,
   checksums: {

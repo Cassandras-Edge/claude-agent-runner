@@ -1,16 +1,54 @@
 {
   "id": "memory-ipc",
-  "type": "template",
   "description": "Expose mutableMessages + Unix socket IPC server for live context surgery",
   "target": "js-only",
-  "anchor": "only prompt commands are supported in streaming mode",
-  "extractors": {
-    "CMD_VAR":      "while\\((\\w+)=(?:await )?\\w+\\(",
-    "PROMPT_VAR":   "let (\\w+)={{CMD_VAR}}\\.value;",
-    "MESSAGES_VAR": "mutableMessages:(\\w+),",
-    "QUEUE_VAR":    "(\\w+)\\.enqueue\\(\\{type:\"system\"",
-    "SESSION_FN":   "session_id:(\\w+)\\(\\)"
-  },
-  "codeFile": "patch-code.js.tmpl",
-  "insertAfter": "let {{PROMPT_VAR}}={{CMD_VAR}}.value;"
+  "tested_versions": ["2.1.63"],
+  "steps": [
+    {
+      "type": "extract",
+      "id": "cmd_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "while\\((\\w+)=(?:await )?\\w+\\(",
+      "store_as": "CMD_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "prompt_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "let (\\w+)={{CMD_VAR}}\\.value;",
+      "store_as": "PROMPT_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "messages_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "mutableMessages:(\\w+),",
+      "store_as": "MESSAGES_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "queue_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "(\\w+)\\.enqueue\\(\\{type:\"system\"",
+      "store_as": "QUEUE_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "session_fn",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "session_id:(\\w+)\\(\\)",
+      "store_as": "SESSION_FN"
+    },
+    {
+      "type": "insert_after",
+      "id": "inject_ipc",
+      "marker": "let {{PROMPT_VAR}}={{CMD_VAR}}.value;",
+      "code_file": "patch-code.js.tmpl"
+    }
+  ]
 }

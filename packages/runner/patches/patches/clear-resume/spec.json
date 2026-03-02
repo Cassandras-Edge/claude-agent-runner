@@ -1,20 +1,69 @@
 {
   "id": "clear-resume",
-  "type": "template",
   "description": "/clear and /resume commands in stream-json mode (SDK)",
   "target": "js-only",
-  "anchor": "only prompt commands are supported in streaming mode",
-  "globalExtractors": {
-    "LOADER_FN":    "let \\w+=await (\\w+)\\(\\w+\\.sessionId,\\w+\\.jsonlFile"
-  },
-  "extractors": {
-    "CMD_VAR":      "while\\((\\w+)=(?:await )?\\w+\\(",
-    "PROMPT_VAR":   "let (\\w+)={{CMD_VAR}}\\.value;",
-    "MESSAGES_VAR": "mutableMessages:(\\w+),",
-    "QUEUE_VAR":    "(\\w+)\\.enqueue\\(\\{type:\"system\"",
-    "SESSION_FN":   "session_id:(\\w+)\\(\\)",
-    "UUID_MOD":     "uuid:(\\w+)\\(\\)"
-  },
-  "codeFile": "patch-code.js.tmpl",
-  "insertAfter": "let {{PROMPT_VAR}}={{CMD_VAR}}.value;"
+  "tested_versions": ["2.1.63"],
+  "steps": [
+    {
+      "type": "extract",
+      "id": "loader_fn",
+      "scope": "global",
+      "pattern": "let \\w+=await (\\w+)\\(\\w+\\.sessionId,\\w+\\.jsonlFile",
+      "store_as": "LOADER_FN"
+    },
+    {
+      "type": "extract",
+      "id": "cmd_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "while\\((\\w+)=(?:await )?\\w+\\(",
+      "store_as": "CMD_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "prompt_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "let (\\w+)={{CMD_VAR}}\\.value;",
+      "store_as": "PROMPT_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "messages_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "mutableMessages:(\\w+),",
+      "store_as": "MESSAGES_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "queue_var",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "(\\w+)\\.enqueue\\(\\{type:\"system\"",
+      "store_as": "QUEUE_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "session_fn",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "session_id:(\\w+)\\(\\)",
+      "store_as": "SESSION_FN"
+    },
+    {
+      "type": "extract",
+      "id": "uuid_mod",
+      "scope": "region",
+      "anchor": "only prompt commands are supported in streaming mode",
+      "pattern": "uuid:(\\w+)\\(\\)",
+      "store_as": "UUID_MOD"
+    },
+    {
+      "type": "insert_after",
+      "id": "inject_clear_resume",
+      "marker": "let {{PROMPT_VAR}}={{CMD_VAR}}.value;",
+      "code_file": "patch-code.js.tmpl"
+    }
+  ]
 }
