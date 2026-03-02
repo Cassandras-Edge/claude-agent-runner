@@ -1,7 +1,31 @@
 {
   "id": "compact-instructions",
-  "disabled": true,
-  "description": "Inject custom compact instructions from RUNNER_COMPACT_INSTRUCTIONS env var. Will be rewritten with find_function steps.",
+  "description": "Inject custom compact instructions from RUNNER_COMPACT_INSTRUCTIONS env var. replace: prefix swaps entire prompt, otherwise appends.",
   "target": "js-only",
-  "steps": []
+  "tested_versions": ["2.1.63"],
+  "steps": [
+    {
+      "type": "find_function",
+      "id": "find_compact_fn",
+      "content_anchor": "Your task is to create a detailed summary of the conversation so far",
+      "store_name_as": "COMPACT_FN",
+      "store_start_as": "COMPACT_FN_START",
+      "store_end_as": "COMPACT_FN_END",
+      "function_style": "declaration"
+    },
+    {
+      "type": "replace_in_function",
+      "id": "merge_instructions",
+      "function_start": "{{COMPACT_FN_START}}",
+      "function_end": "{{COMPACT_FN_END}}",
+      "find": "if(A&&A.trim()!==\"\")q+=`\n\nAdditional Instructions:\n${A}`",
+      "replace": "var _ci=typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_INSTRUCTIONS||null;if(_ci&&_ci.startsWith(\"replace:\"))return _ci.slice(8);var _allInst=[A,_ci].filter(Boolean).join(\"\\n\\n\");if(_allInst.trim())q+=`\n\nAdditional Instructions:\n${_allInst}`",
+      "mode": "literal",
+      "expected_count": 1
+    }
+  ],
+  "assertions": {
+    "pre": [{ "present": "Your task is to create a detailed summary of the conversation so far" }],
+    "post": [{ "present": "RUNNER_COMPACT_INSTRUCTIONS" }]
+  }
 }
