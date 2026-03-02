@@ -528,7 +528,13 @@ async function testContextStateFrames() {
   send(ws, { type: "send", session_id: sessionId, message: "Say PINEAPPLE", request_id: "ctx-state-1" });
   await waitFor(ws, (f) => f.type === "ack", 5000);
 
-  const frames = await collectUntil(ws, (f) => f.type === "event" && f.event?.type === "result");
+  // context_state arrives AFTER the result event, so collect until we see it
+  // (or until ready status, whichever comes first after the result)
+  const frames = await collectUntil(
+    ws,
+    (f) => f.type === "context_state" || (f.type === "status" && f.status === "ready"),
+    120_000,
+  );
 
   const ctxFrames = frames.filter((f) => f.type === "context_state");
   assert(ctxFrames.length > 0, `Got ${ctxFrames.length} context_state frame(s)`);
