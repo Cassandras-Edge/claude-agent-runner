@@ -61,11 +61,27 @@ interface PermissionResponseFrame {
   request_id?: string;
 }
 
+interface RewindFrame {
+  type: "rewind";
+  session_id: string;
+  user_message_uuid: string;
+  request_id?: string;
+}
+
+interface SetOptionsFrame {
+  type: "set_options";
+  session_id: string;
+  model?: string;
+  max_thinking_tokens?: number;
+  compact_instructions?: string;
+  request_id?: string;
+}
+
 interface PingFrame {
   type: "ping";
 }
 
-type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PermissionResponseFrame | PingFrame;
+type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PermissionResponseFrame | RewindFrame | SetOptionsFrame | PingFrame;
 
 // --- Server → Client frame types ---
 
@@ -204,6 +220,14 @@ function handleFrame(ws: WebSocket, frame: ClientFrame, ctx: HandleContext): voi
 
     case "permission_response":
       handlePermissionResponse(ws, frame as PermissionResponseFrame, ctx);
+      return;
+
+    case "rewind":
+      handleRewind(ws, frame as RewindFrame, ctx);
+      return;
+
+    case "set_options":
+      handleSetOptions(ws, frame as SetOptionsFrame, ctx);
       return;
 
     default:
@@ -482,6 +506,61 @@ function handleCompact(ws: WebSocket, frame: CompactFrame, ctx: HandleContext): 
 
   const sent = ctx.bridge.sendCompact(session_id, custom_instructions, ctx.requestId);
   sendFrame(ws, { type: "ack", session_id, ok: sent, request_id: ctx.requestId, ...(!sent ? { error: "Runner not connected" } : {}) });
+}
+
+// --- Rewind ---
+
+function handleRewind(ws: WebSocket, frame: RewindFrame, ctx: HandleContext): void {
+  const { session_id, user_message_uuid } = frame;
+
+  const session = ctx.sessions.get(session_id);
+  if (!session) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session not found", request_id: ctx.requestId });
+    return;
+  }
+  if (session.status === "busy") {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session is busy", request_id: ctx.requestId });
+    return;
+  }
+
+  const sent = ctx.bridge.sendRewind(session_id, user_message_uuid, ctx.requestId, ctx.connectionId);
+  sendFrame(ws, { type: "ack", session_id, ok: sent, request_id: ctx.requestId, ...(!sent ? { error: "Runner not connected" } : {}) });
+
+  logger.event("client-ws", "rewind_dispatched", {
+    session_id,
+    user_message_uuid,
+    ok: sent,
+    request_id: ctx.requestId,
+  });
+}
+
+// --- Set Options ---
+
+function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleContext): void {
+  const { session_id, model, max_thinking_tokens, compact_instructions } = frame;
+
+  const session = ctx.sessions.get(session_id);
+  if (!session) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session not found", request_id: ctx.requestId });
+    return;
+  }
+
+  const sent = ctx.bridge.sendSetOptions(session_id, {
+    model,
+    maxThinkingTokens: max_thinking_tokens,
+    compactInstructions: compact_instructions,
+    requestId: ctx.requestId,
+    traceId: ctx.connectionId,
+  });
+  sendFrame(ws, { type: "ack", session_id, ok: sent, request_id: ctx.requestId, ...(!sent ? { error: "Runner not connected" } : {}) });
+
+  logger.event("client-ws", "set_options_dispatched", {
+    session_id,
+    model,
+    max_thinking_tokens,
+    ok: sent,
+    request_id: ctx.requestId,
+  });
 }
 
 // --- Permission Response ---

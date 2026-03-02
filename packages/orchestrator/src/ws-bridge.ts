@@ -356,6 +356,56 @@ export class WsBridge extends EventEmitter {
     });
   }
 
+  sendRewind(sessionId: string, userMessageUuid: string, requestId?: string, traceId?: string): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_rewind", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "rewind",
+      user_message_uuid: userMessageUuid,
+      request_id: requestId,
+      trace_id: traceId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_rewind_command", {
+      session_id: sessionId,
+      user_message_uuid: userMessageUuid,
+      request_id: requestId,
+    });
+    return true;
+  }
+
+  sendSetOptions(
+    sessionId: string,
+    options: {
+      model?: string;
+      maxThinkingTokens?: number;
+      compactInstructions?: string;
+      requestId?: string;
+      traceId?: string;
+    },
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_set_options", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "set_options",
+      ...(options.model ? { model: options.model } : {}),
+      ...(options.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
+      ...(options.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
+      request_id: options.requestId,
+      trace_id: options.traceId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_set_options_command", {
+      session_id: sessionId,
+      request_id: options.requestId,
+    });
+    return true;
+  }
+
   sendPermissionResponse(
     sessionId: string,
     toolUseId: string,
