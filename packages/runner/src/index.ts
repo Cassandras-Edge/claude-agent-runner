@@ -1347,6 +1347,101 @@ function connect(): void {
       return;
     }
 
+    if (msg.type === "rewind") {
+      const rewindMsg = msg as any;
+      const requestId = rewindMsg.request_id;
+
+      if (isBusy) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_result",
+            session_id: SESSION_ID,
+            success: false,
+            error: "Session is busy",
+            request_id: requestId,
+          }));
+        }
+        return;
+      }
+
+      try {
+        if (!ipc?.isConnected) {
+          throw new Error("IPC not connected — cannot rewind");
+        }
+
+        const messages = await ipc.getMessages();
+        const targetUuid = rewindMsg.user_message_uuid;
+        const targetIdx = messages.findIndex((m: any) => m.uuid === targetUuid);
+
+        if (targetIdx === -1) {
+          throw new Error(`Message UUID not found: ${targetUuid}`);
+        }
+
+        // Remove everything after the target message
+        const removeCount = messages.length - (targetIdx + 1);
+        if (removeCount > 0) {
+          await ipc.splice(targetIdx + 1, removeCount);
+        }
+
+        logger.info("runner.ws", "rewind_complete", {
+          session_id: SESSION_ID,
+          target_uuid: targetUuid,
+          messages_removed: removeCount,
+          request_id: requestId,
+        });
+
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_result",
+            session_id: SESSION_ID,
+            success: true,
+            data: { messages_removed: removeCount },
+            request_id: requestId,
+          }));
+        }
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        logger.error("runner.ws", "rewind_failed", { session_id: SESSION_ID, error: errorMsg });
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "context_result",
+            session_id: SESSION_ID,
+            success: false,
+            error: errorMsg,
+            request_id: requestId,
+          }));
+        }
+      }
+      return;
+    }
+
+    if (msg.type === "set_options") {
+      const optMsg = msg as any;
+      // Update mutable session state for next runTurn
+      if (optMsg.model) {
+        (globalThis as any).__runnerModelOverride = optMsg.model;
+        logger.info("runner.ws", "model_override_set", { session_id: SESSION_ID, model: optMsg.model });
+      }
+      if (optMsg.maxThinkingTokens !== undefined) {
+        (globalThis as any).__runnerMaxThinkingTokensOverride = optMsg.maxThinkingTokens;
+        logger.info("runner.ws", "max_thinking_tokens_override_set", { session_id: SESSION_ID, maxThinkingTokens: optMsg.maxThinkingTokens });
+      }
+      if (optMsg.compact_instructions) {
+        pendingCompactInstructions = optMsg.compact_instructions;
+        logger.info("runner.ws", "compact_instructions_override_set", { session_id: SESSION_ID });
+      }
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "status",
+          session_id: SESSION_ID,
+          status: isBusy ? "busy" : "ready",
+          request_id: optMsg.request_id,
+        }));
+      }
+      return;
+    }
+
     if (msg.type === "permission_response") {
       const permMsg = msg as OrchestratorPermissionResponseCommand;
       const resolver = pendingPermissionRequests.get(permMsg.tool_use_id);

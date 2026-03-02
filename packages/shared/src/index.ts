@@ -268,6 +268,20 @@ export interface OrchestratorForkAndSteerCommand extends WsCorrelation {
   maxThinkingTokens?: number;
 }
 
+/** Orchestrator → Runner: rewind context to a specific message UUID */
+export interface OrchestratorRewindCommand extends WsCorrelation {
+  type: "rewind";
+  user_message_uuid: string;
+}
+
+/** Orchestrator → Runner: dynamically update session options */
+export interface OrchestratorSetOptionsCommand extends WsCorrelation {
+  type: "set_options";
+  model?: string;
+  maxThinkingTokens?: number;
+  compact_instructions?: string;
+}
+
 /** Orchestrator → Runner: respond to a permission request from canUseTool callback */
 export interface OrchestratorPermissionResponseCommand extends WsCorrelation {
   type: "permission_response";
@@ -284,6 +298,8 @@ export type OrchestratorCommand =
   | OrchestratorContextCommand
   | OrchestratorSteerCommand
   | OrchestratorForkAndSteerCommand
+  | OrchestratorRewindCommand
+  | OrchestratorSetOptionsCommand
   | OrchestratorPermissionResponseCommand;
 
 // --- Context Snapshot Types ---
