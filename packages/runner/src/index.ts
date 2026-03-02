@@ -1488,6 +1488,38 @@ function connect(): void {
       return;
     }
 
+    if (msg.type === "get_commands") {
+      const requestId = (msg as any).request_id;
+      const traceId = (msg as any).trace_id;
+      try {
+        const commands = session ? await (session as any).supportedCommands() : [];
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "commands_result",
+            session_id: SESSION_ID,
+            commands: commands.map((c: any) => ({ name: c.name, description: c.description, argumentHint: c.argumentHint })),
+            request_id: requestId,
+            trace_id: traceId,
+          }));
+        }
+      } catch (err) {
+        logger.warn("runner.ws", "get_commands_failed", {
+          session_id: SESSION_ID,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "commands_result",
+            session_id: SESSION_ID,
+            commands: [],
+            request_id: requestId,
+            trace_id: traceId,
+          }));
+        }
+      }
+      return;
+    }
+
     if (msg.type === "shutdown") {
       logger.info("runner.ws", "shutdown_requested", { session_id: SESSION_ID });
       // Clean up IPC and session

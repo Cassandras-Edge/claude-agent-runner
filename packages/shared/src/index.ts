@@ -206,7 +206,8 @@ export type RunnerMessage =
   | RunnerContextStateMessage
   | RunnerContextResultMessage
   | RunnerContextSnapshotMessage
-  | RunnerPermissionRequestMessage;
+  | RunnerPermissionRequestMessage
+  | RunnerCommandsResultMessage;
 
 /** Orchestrator → Runner: send a message to the agent */
 export interface OrchestratorMessageCommand extends WsCorrelation {
@@ -302,6 +303,18 @@ export interface OrchestratorPermissionResponseCommand extends WsCorrelation {
   updated_input?: any;
 }
 
+/** Orchestrator → Runner: request available slash commands/skills */
+export interface OrchestratorGetCommandsCommand extends WsCorrelation {
+  type: "get_commands";
+}
+
+/** Runner → Orchestrator: available slash commands/skills */
+export interface RunnerCommandsResultMessage extends WsCorrelation {
+  type: "commands_result";
+  session_id: string;
+  commands: Array<{ name: string; description: string; argumentHint: string }>;
+}
+
 export type OrchestratorCommand =
   | OrchestratorMessageCommand
   | OrchestratorShutdownCommand
@@ -311,7 +324,8 @@ export type OrchestratorCommand =
   | OrchestratorForkAndSteerCommand
   | OrchestratorRewindCommand
   | OrchestratorSetOptionsCommand
-  | OrchestratorPermissionResponseCommand;
+  | OrchestratorPermissionResponseCommand
+  | OrchestratorGetCommandsCommand;
 
 // --- Context Snapshot Types ---
 

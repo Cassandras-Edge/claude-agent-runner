@@ -122,6 +122,15 @@ export class WsBridge extends EventEmitter {
             this.emit(`permission_request:${sessionId}`, msg);
             break;
 
+          case "commands_result":
+            logger.debug("orchestrator.ws_bridge", "runner_commands_result", {
+              session_id: sessionId,
+              count: (msg as any).commands?.length ?? 0,
+              request_id: (msg as any).request_id,
+            });
+            this.emit(`commands_result:${sessionId}:${(msg as any).request_id}`, msg);
+            break;
+
           case "context_snapshot": {
             const snap = msg as RunnerContextSnapshotMessage;
             logger.info("orchestrator.ws_bridge", "runner_context_snapshot", {
@@ -435,6 +444,38 @@ export class WsBridge extends EventEmitter {
       behavior,
     });
     return true;
+  }
+
+  sendGetCommands(sessionId: string, requestId?: string, traceId?: string): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_get_commands", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "get_commands",
+      request_id: requestId,
+      trace_id: traceId,
+    }));
+    return true;
+  }
+
+  /** Wait for a commands_result from the runner (one-shot, with timeout). */
+  waitForCommandsResult(sessionId: string, requestId: string, timeoutMs = 10000): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const eventKey = `commands_result:${sessionId}:${requestId}`;
+      const timer = setTimeout(() => {
+        this.removeListener(eventKey, onResult);
+        reject(new Error("Timed out waiting for commands result"));
+      }, timeoutMs);
+
+      const onResult = (msg: any) => {
+        clearTimeout(timer);
+        this.removeListener(eventKey, onResult);
+        resolve(msg);
+      };
+      this.on(eventKey, onResult);
+    });
   }
 
   /** Attach a database reference for persisting snapshots. */
