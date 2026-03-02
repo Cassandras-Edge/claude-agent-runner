@@ -6,6 +6,7 @@ export interface LogContext {
   traceId?: string;
   requestId?: string;
   sessionId?: string;
+  connectionId?: string;
 }
 
 interface LogMeta {
@@ -62,7 +63,8 @@ function emit(level: LogLevel, scope: string, message: string, meta?: LogMeta): 
     ...(context.traceId ? { trace_id: context.traceId } : {}),
     ...(context.requestId ? { request_id: context.requestId } : {}),
     ...(context.sessionId ? { session_id: context.sessionId } : {}),
-    ...(meta ? { meta } : {}),
+    ...(context.connectionId ? { connection_id: context.connectionId } : {}),
+    ...meta,
   };
   const line = JSON.stringify(payload);
 
@@ -87,5 +89,9 @@ export const logger = {
   },
   debug(scope: string, message: string, meta?: LogMeta): void {
     emit("debug", scope, message, meta);
+  },
+  /** Wide event — a single log entry capturing an entire operation with all dimensional context. */
+  event(scope: string, message: string, meta?: LogMeta): void {
+    emit("info", scope, message, meta);
   },
 };

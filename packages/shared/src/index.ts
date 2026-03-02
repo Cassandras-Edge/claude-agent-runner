@@ -275,16 +275,3 @@ export interface ContextSnapshot extends ContextSnapshotSummary {
   messages: any[];
 }
 
-// --- SSE Event Types ---
-
-export type SSEEventType =
-  | "session"
-  | "assistant"
-  | "stream_event"
-  | "user"
-  | "system"
-  | "tool_progress"
-  | "tool_use_summary"
-  | "auth_status"
-  | "result"
-  | "error";

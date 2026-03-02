@@ -31,7 +31,6 @@ export type {
   RunnerContextResultMessage,
   ContextMessage,
   ContextStats,
-  SSEEventType,
   RunnerContextSnapshotMessage,
   ContextSnapshotSummary,
   ContextSnapshot,
