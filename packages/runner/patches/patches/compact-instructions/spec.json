@@ -1,0 +1,7 @@
+{
+  "id": "compact-instructions",
+  "disabled": true,
+  "description": "Inject custom compact instructions from RUNNER_COMPACT_INSTRUCTIONS env var. Will be rewritten with find_function steps.",
+  "target": "js-only",
+  "steps": []
+}

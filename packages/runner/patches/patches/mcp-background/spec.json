@@ -1,24 +1,96 @@
 {
   "id": "mcp-background",
-  "type": "template",
   "description": "Add run_in_background support to all MCP tool calls using AppState.tasks",
   "target": "js-only",
-  "anchor": "mcpInfo:{serverName",
-  "globalExtractors": {
-    "TASK_ID_FN":       "function (\\w+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\(8\\)",
-    "TASK_OBJ_FN":      "function (\\w+)\\(\\w+,\\w+,\\w+,\\w+\\)\\{return\\{id:\\w+,type:\\w+,status:\"pending\"[^}]+outputOffset:0,notified:!1",
-    "OUTPUT_PATH_FN":   "function (\\w+)\\(\\w+\\)\\{return \\w+\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)\\}",
-    "TASK_REGISTER_FN": "function (\\w+)\\(\\w+,\\w+\\)\\{\\w+\\(\\(\\w+\\)=>\\(\\{[^}]*tasks:\\{[^}]*\\[\\w+\\.id\\]:\\w+\\}\\}\\)\\)",
-    "TASK_UPDATE_FN":   "function ([\\w$]+)\\([\\w$]+,[\\w$]+,[\\w$]+\\)\\{[\\w$]+\\(\\([\\w$]+\\)=>\\{let [\\w$]+=[\\w$]+\\.tasks\\?\\.\\[[\\w$]+\\];if\\(![\\w$]+\\)return [\\w$]+;return\\{",
-    "MKDIR_FN":         "async function (\\w+)\\(\\)\\{await \\w+\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}"
-  },
-  "extractors": {
-    "CONN_VAR":   "async\\((\\w+)\\)=>\\{if\\(\\w+\\.type!==\"connected\"\\)return\\[\\]",
-    "TOOL_VAR":   "return \\w+\\.map\\(\\((\\w+)\\)=>\\{",
-    "GUARD_FN":   "(\\w+)\\(\\w+\\.name\\)\\?\\w+\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
-    "COMPAT_FN":  "\\w+\\(\\w+\\.name\\)\\?(\\w+)\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
-    "FILTER_FN":  ":\\{\\}\\}\\}\\)\\.filter\\((\\w+)\\)"
-  },
-  "codeFile": "patch-code.js.tmpl",
-  "insertAfter": "{{GUARD_FN}}({{CONN_VAR}}.name)?{{COMPAT_FN}}({{TOOL_VAR}}.name):{}}})"
+  "tested_versions": ["2.1.63"],
+  "steps": [
+    {
+      "type": "extract",
+      "id": "task_id_fn",
+      "scope": "global",
+      "pattern": "function (\\w+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\(8\\)",
+      "store_as": "TASK_ID_FN"
+    },
+    {
+      "type": "extract",
+      "id": "task_obj_fn",
+      "scope": "global",
+      "pattern": "function (\\w+)\\(\\w+,\\w+,\\w+,\\w+\\)\\{return\\{id:\\w+,type:\\w+,status:\"pending\"[^}]+outputOffset:0,notified:!1",
+      "store_as": "TASK_OBJ_FN"
+    },
+    {
+      "type": "extract",
+      "id": "output_path_fn",
+      "scope": "global",
+      "pattern": "function (\\w+)\\(\\w+\\)\\{return \\w+\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)\\}",
+      "store_as": "OUTPUT_PATH_FN"
+    },
+    {
+      "type": "extract",
+      "id": "task_register_fn",
+      "scope": "global",
+      "pattern": "function (\\w+)\\(\\w+,\\w+\\)\\{\\w+\\(\\(\\w+\\)=>\\(\\{[^}]*tasks:\\{[^}]*\\[\\w+\\.id\\]:\\w+\\}\\}\\)\\)",
+      "store_as": "TASK_REGISTER_FN"
+    },
+    {
+      "type": "extract",
+      "id": "task_update_fn",
+      "scope": "global",
+      "pattern": "function ([\\w$]+)\\([\\w$]+,[\\w$]+,[\\w$]+\\)\\{[\\w$]+\\(\\([\\w$]+\\)=>\\{let [\\w$]+=[\\w$]+\\.tasks\\?\\.\\[[\\w$]+\\];if\\(![\\w$]+\\)return [\\w$]+;return\\{",
+      "store_as": "TASK_UPDATE_FN"
+    },
+    {
+      "type": "extract",
+      "id": "mkdir_fn",
+      "scope": "global",
+      "pattern": "async function (\\w+)\\(\\)\\{await \\w+\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}",
+      "store_as": "MKDIR_FN"
+    },
+    {
+      "type": "extract",
+      "id": "conn_var",
+      "scope": "region",
+      "anchor": "mcpInfo:{serverName",
+      "pattern": "async\\((\\w+)\\)=>\\{if\\(\\w+\\.type!==\"connected\"\\)return\\[\\]",
+      "store_as": "CONN_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "tool_var",
+      "scope": "region",
+      "anchor": "mcpInfo:{serverName",
+      "pattern": "return \\w+\\.map\\(\\((\\w+)\\)=>\\{",
+      "store_as": "TOOL_VAR"
+    },
+    {
+      "type": "extract",
+      "id": "guard_fn",
+      "scope": "region",
+      "anchor": "mcpInfo:{serverName",
+      "pattern": "(\\w+)\\(\\w+\\.name\\)\\?\\w+\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
+      "store_as": "GUARD_FN"
+    },
+    {
+      "type": "extract",
+      "id": "compat_fn",
+      "scope": "region",
+      "anchor": "mcpInfo:{serverName",
+      "pattern": "\\w+\\(\\w+\\.name\\)\\?(\\w+)\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
+      "store_as": "COMPAT_FN"
+    },
+    {
+      "type": "extract",
+      "id": "filter_fn",
+      "scope": "region",
+      "anchor": "mcpInfo:{serverName",
+      "pattern": ":\\{\\}\\}\\}\\)\\.filter\\((\\w+)\\)",
+      "store_as": "FILTER_FN"
+    },
+    {
+      "type": "insert_after",
+      "id": "inject_mcp_bg",
+      "marker": "{{GUARD_FN}}({{CONN_VAR}}.name)?{{COMPAT_FN}}({{TOOL_VAR}}.name):{}}})",
+      "code_file": "patch-code.js.tmpl"
+    }
+  ]
 }
