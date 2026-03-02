@@ -149,6 +149,9 @@ let setupCompleted = false;
 let isBusy = false;
 let forceCompactOnNextQuery = false;
 let pendingCompactInstructions: string | undefined = undefined;
+// Mutable compact instructions: starts from env, can be updated via set_options.
+// The PreCompact hook reads this lazily so changes apply to all future compacts (auto + manual).
+let activeCompactInstructions: string | undefined = COMPACT_INSTRUCTIONS;
 
 // V1 fallback: active query handle for abort (used when V2 session is not available)
 let activeResponse: ReturnType<typeof query> | null = null;
@@ -193,16 +196,18 @@ const pendingPermissionRequests = new Map<string, (result: { behavior: string; m
 function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSessionOptions & Record<string, any> {
   const childEnv = buildClaudeChildEnv(forceCompact);
 
-  const effectiveCompactInstructions = COMPACT_INSTRUCTIONS;
   const hooks: Record<string, any[]> = {};
-  if (effectiveCompactInstructions) {
-    hooks.PreCompact = [{
-      hooks: [async () => ({
+  // Always install PreCompact hook — reads activeCompactInstructions lazily
+  // so changes via set_options apply to all future compacts (auto + manual).
+  hooks.PreCompact = [{
+    hooks: [async () => {
+      if (!activeCompactInstructions) return { continue: true };
+      return {
         continue: true,
-        systemMessage: effectiveCompactInstructions,
-      })],
-    }];
-  }
+        systemMessage: activeCompactInstructions,
+      };
+    }],
+  }];
 
   // Path restriction hook: deny file operations outside allowed directories
   if (ALLOWED_PATHS.length > 0) {
@@ -540,7 +545,9 @@ export async function runAgentV1(
   const childEnv = buildClaudeChildEnv(forceCompact);
   const stderrRing = createStderrRingBuffer(200);
 
-  const effectiveCompactInstructions = overrides?.compactInstructionsOverride ?? COMPACT_INSTRUCTIONS;
+  // If a one-shot override is provided (steer with custom compact instructions),
+  // use it; otherwise fall back to the mutable activeCompactInstructions.
+  const effectiveCompactInstructions = overrides?.compactInstructionsOverride ?? activeCompactInstructions;
   const hooks: Record<string, any[]> = {};
   if (effectiveCompactInstructions) {
     hooks.PreCompact = [{
@@ -1427,7 +1434,7 @@ function connect(): void {
         logger.info("runner.ws", "max_thinking_tokens_override_set", { session_id: SESSION_ID, maxThinkingTokens: optMsg.maxThinkingTokens });
       }
       if (optMsg.compact_instructions) {
-        pendingCompactInstructions = optMsg.compact_instructions;
+        activeCompactInstructions = optMsg.compact_instructions;
         logger.info("runner.ws", "compact_instructions_override_set", { session_id: SESSION_ID });
       }
 
