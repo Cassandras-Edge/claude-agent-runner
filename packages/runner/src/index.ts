@@ -151,6 +151,7 @@ let pendingSteer: {
   message: string;
   model?: string;
   maxTurns?: number;
+  maxThinkingTokens?: number;
   requestId?: string;
   traceId?: string;
   compact?: boolean;
@@ -163,6 +164,7 @@ let pendingForkAndSteer: {
   message: string;
   model?: string;
   maxTurns?: number;
+  maxThinkingTokens?: number;
   requestId?: string;
   traceId?: string;
 } | null = null;
@@ -267,6 +269,7 @@ async function runTurn(
   overrides?: {
     model?: string;
     maxTurns?: number;
+    maxThinkingTokens?: number;
     requestId?: string;
     traceId?: string;
     forceCompact?: boolean;
@@ -845,6 +848,7 @@ function connect(): void {
         let currentMessage = msg.message;
         let currentModel = msg.model;
         let currentMaxTurns = msg.maxTurns;
+        let currentMaxThinkingTokens = msg.maxThinkingTokens;
         let currentRequestId = requestId;
         let currentTraceId = traceId;
 
@@ -854,6 +858,7 @@ function connect(): void {
             await runTurn(ws, currentMessage, {
               model: currentModel,
               maxTurns: currentMaxTurns,
+              maxThinkingTokens: currentMaxThinkingTokens,
               requestId: currentRequestId,
               traceId: currentTraceId,
               forceCompact: useForceCompact,
@@ -1010,6 +1015,7 @@ function connect(): void {
               currentMessage = forkReq.message;
               currentModel = forkReq.model;
               currentMaxTurns = forkReq.maxTurns;
+              currentMaxThinkingTokens = forkReq.maxThinkingTokens;
               currentRequestId = forkReq.requestId;
               currentTraceId = forkReq.traceId;
               useForceCompact = false;
@@ -1059,6 +1065,7 @@ function connect(): void {
           currentMessage = steer.message;
           currentModel = steer.model;
           currentMaxTurns = steer.maxTurns;
+          currentMaxThinkingTokens = steer.maxThinkingTokens;
           currentRequestId = steer.requestId;
           currentTraceId = steer.traceId;
           useForceCompact = steer.compact ?? false;
@@ -1116,6 +1123,7 @@ function connect(): void {
           message: steerMsg.message,
           model: steerMsg.model,
           maxTurns: steerMsg.maxTurns,
+          maxThinkingTokens: steerMsg.maxThinkingTokens,
           requestId: steerRequestId,
           traceId: steerTraceId,
           compact: steerMsg.compact,
@@ -1152,6 +1160,7 @@ function connect(): void {
             await runTurn(ws, steerMsg.message, {
               model: steerMsg.model,
               maxTurns: steerMsg.maxTurns,
+              maxThinkingTokens: steerMsg.maxThinkingTokens,
               requestId: steerRequestId,
               traceId: steerTraceId,
               forceCompact: steerMsg.compact ?? false,
@@ -1195,6 +1204,7 @@ function connect(): void {
           message: fasMsg.message,
           model: fasMsg.model,
           maxTurns: fasMsg.maxTurns,
+          maxThinkingTokens: (fasMsg as any).maxThinkingTokens,
           requestId: fasRequestId,
           traceId: fasTraceId,
         };
@@ -1210,6 +1220,7 @@ function connect(): void {
             await runTurn(ws, fasMsg.message, {
               model: fasMsg.model,
               maxTurns: fasMsg.maxTurns,
+              maxThinkingTokens: (fasMsg as any).maxThinkingTokens,
               requestId: fasRequestId,
               traceId: fasTraceId,
             });

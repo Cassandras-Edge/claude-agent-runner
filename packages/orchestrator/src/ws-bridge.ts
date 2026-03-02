@@ -177,7 +177,7 @@ export class WsBridge extends EventEmitter {
   sendMessage(
     sessionId: string,
     message: string,
-    overrides?: { model?: string; maxTurns?: number; requestId?: string; traceId?: string }
+    overrides?: { model?: string; maxTurns?: number; maxThinkingTokens?: number; requestId?: string; traceId?: string }
   ): boolean {
     const ws = this.connections.get(sessionId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -236,6 +236,7 @@ export class WsBridge extends EventEmitter {
     options?: {
       model?: string;
       maxTurns?: number;
+      maxThinkingTokens?: number;
       compact?: boolean;
       compactInstructions?: string;
       operations?: ContextOperation[];
@@ -253,6 +254,7 @@ export class WsBridge extends EventEmitter {
       message,
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.maxTurns ? { maxTurns: options.maxTurns } : {}),
+      ...(options?.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       ...(options?.compact ? { compact: options.compact } : {}),
       ...(options?.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
       ...(options?.operations ? { operations: options.operations } : {}),
@@ -274,6 +276,7 @@ export class WsBridge extends EventEmitter {
     options?: {
       model?: string;
       maxTurns?: number;
+      maxThinkingTokens?: number;
       requestId?: string;
       traceId?: string;
     },
@@ -288,6 +291,7 @@ export class WsBridge extends EventEmitter {
       message,
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.maxTurns ? { maxTurns: options.maxTurns } : {}),
+      ...(options?.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       request_id: options?.requestId,
       trace_id: options?.traceId,
     }));
