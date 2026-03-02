@@ -8,6 +8,7 @@ import { WsBridge } from "./ws-bridge.js";
 import { TokenPool } from "./token-pool.js";
 import { openDb } from "./db.js";
 import { attachClientWs } from "./client-ws.js";
+import { AutoCompactor } from "./auto-compact.js";
 import { logger } from "./logger.js";
 
 // --- Config ---
@@ -63,7 +64,14 @@ const sessions = new SessionManager(db);
 const docker = new DockerManager();
 const bridge = new WsBridge(sessions, WS_PORT);
 bridge.setDb(db);
-logger.info("orchestrator.bootstrap", "session manager, docker manager, and ws bridge initialized");
+const autoCompactor = new AutoCompactor(bridge, sessions);
+bridge.on("context_state", (sessionId: string, contextTokens: number) => {
+  autoCompactor.onContextState(sessionId, contextTokens);
+});
+bridge.on("status", (sessionId: string, status: string) => {
+  autoCompactor.onStatusChange(sessionId, status);
+});
+logger.info("orchestrator.bootstrap", "session manager, docker manager, ws bridge, and auto-compactor initialized");
 
 // Reconcile persisted sessions against live Docker state on startup.
 const persistedSessions = sessions.list();
@@ -146,6 +154,7 @@ const idleSweep = setInterval(() => {
 async function shutdown() {
   logger.info("orchestrator.shutdown", "shutting_down");
   clearInterval(idleSweep);
+  autoCompactor.destroy();
   clientWss.close();
   bridge.close();
   if (CLEANUP_RUNNERS_ON_EXIT) {

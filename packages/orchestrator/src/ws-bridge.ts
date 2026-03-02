@@ -51,6 +51,7 @@ export class WsBridge extends EventEmitter {
             });
             this.sessions.updateStatus(sessionId, msg.status);
             this.emit(`status:${sessionId}`, msg.status);
+            this.emit("status", sessionId, msg.status);
             break;
 
           case "session_init":
@@ -100,6 +101,7 @@ export class WsBridge extends EventEmitter {
               this.sessions.incrementCompactCount(sessionId);
             }
             this.emit(`context_state:${sessionId}`, (msg as any).context_tokens, (msg as any).compacted);
+            this.emit("context_state", sessionId, (msg as any).context_tokens, (msg as any).compacted);
             break;
 
           case "context_result":
