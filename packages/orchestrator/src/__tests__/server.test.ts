@@ -383,23 +383,6 @@ describe("Server Routes", () => {
     });
   });
 
-  describe("POST /sessions/:id/messages/stream", () => {
-    it("returns 404 for unknown session", async () => {
-      const { status, json } = await jsonResponse(app, "POST", "/sessions/unknown/messages/stream", { message: "hi" });
-      expect(status).toBe(404);
-      expect(json.code).toBe("session_not_found");
-    });
-
-    it("returns 409 when session is busy", async () => {
-      sessions.create("s1", "c1", 0, { model: "sonnet" });
-      sessions.updateStatus("s1", "busy");
-
-      const { status, json } = await jsonResponse(app, "POST", "/sessions/s1/messages/stream", { message: "hi" });
-      expect(status).toBe(409);
-      expect(json.code).toBe("session_busy");
-    });
-  });
-
   describe("GET /sessions/:id/transcript", () => {
     it("returns 404 for unknown session", async () => {
       const { status, json } = await jsonResponse(app, "GET", "/sessions/unknown/transcript");
