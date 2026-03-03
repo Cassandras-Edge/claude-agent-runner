@@ -51,6 +51,11 @@ const runnerEnv: Record<string, string> = {};
 if (process.env.GIT_TOKEN) runnerEnv.GIT_TOKEN = process.env.GIT_TOKEN;
 if (process.env.GITHUB_TOKEN) runnerEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
+// Vault sync env vars (optional — required only when using vault source type)
+if (process.env.OBSIDIAN_AUTH_TOKEN) runnerEnv.OBSIDIAN_AUTH_TOKEN = process.env.OBSIDIAN_AUTH_TOKEN;
+if (process.env.OBSIDIAN_E2EE_PASSWORD) runnerEnv.OBSIDIAN_E2EE_PASSWORD = process.env.OBSIDIAN_E2EE_PASSWORD;
+if (process.env.VAULT_SYNC_IMAGE) runnerEnv.VAULT_SYNC_IMAGE = process.env.VAULT_SYNC_IMAGE;
+
 // --- Database ---
 
 // Ensure the data directory exists

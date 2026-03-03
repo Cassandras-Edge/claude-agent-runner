@@ -36,6 +36,7 @@ export interface SessionRequest {
   repo?: string;
   branch?: string;
   workspace?: string;
+  vault?: string;
   message?: string;
   model?: Model;
   systemPrompt?: string;
@@ -92,10 +93,11 @@ export interface SessionInfo {
   pinned?: boolean;
   status: SessionStatus;
   source: {
-    type: "repo" | "workspace";
+    type: "repo" | "workspace" | "vault";
     repo?: string;
     branch?: string;
     workspace?: string;
+    vault?: string;
   };
   model: string;
   created_at: string;

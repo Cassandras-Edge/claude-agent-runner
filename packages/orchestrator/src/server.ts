@@ -71,6 +71,24 @@ export function createServer(ctx: AppContext): Hono {
     });
   });
 
+  // --- Vaults: List active vault syncs ---
+
+  app.get("/vaults", async (c) => {
+    const volumes = await ctx.docker.listVaultVolumes();
+    const vaults = volumes.map((v) => {
+      const session = ctx.sessions.get(v.sessionId);
+      return {
+        volume: v.name,
+        session_id: v.sessionId,
+        vault_name: session?.vaultName,
+        session_status: session?.status,
+        sidecar_running: ctx.docker.hasSidecar(v.sessionId),
+        created_at: v.createdAt,
+      };
+    });
+    return c.json({ vaults });
+  });
+
   // --- Sessions: List ---
 
   app.get("/sessions", (c) => {
@@ -80,9 +98,10 @@ export function createServer(ctx: AppContext): Hono {
       pinned: s.pinned,
       status: s.status,
       source: {
-        type: s.repo ? "repo" as const : s.workspace ? "workspace" as const : "ephemeral" as const,
+        type: s.repo ? "repo" as const : s.vaultName ? "vault" as const : s.workspace ? "workspace" as const : "ephemeral" as const,
         ...(s.repo ? { repo: s.repo, branch: s.branch } : {}),
         ...(s.workspace ? { workspace: s.workspace } : {}),
+        ...(s.vaultName ? { vault: s.vaultName } : {}),
       },
       model: s.model,
       created_at: s.createdAt.toISOString(),
@@ -109,9 +128,10 @@ export function createServer(ctx: AppContext): Hono {
       pinned: session.pinned,
       status: session.status,
       source: {
-        type: session.repo ? "repo" : session.workspace ? "workspace" : "ephemeral",
+        type: session.repo ? "repo" : session.vaultName ? "vault" : session.workspace ? "workspace" : "ephemeral",
         ...(session.repo ? { repo: session.repo, branch: session.branch } : {}),
         ...(session.workspace ? { workspace: session.workspace } : {}),
+        ...(session.vaultName ? { vault: session.vaultName } : {}),
       },
       model: session.model,
       created_at: session.createdAt.toISOString(),
@@ -507,10 +527,17 @@ export function createServer(ctx: AppContext): Hono {
     await ctx.docker.kill(session.id);
     ctx.sessions.updateStatus(session.id, "stopped");
 
+    // Optionally clean up vault volume (default: keep for fast re-sync)
+    const cleanupVolume = c.req.query("cleanup_volume") === "true";
+    if (session.vaultName && cleanupVolume) {
+      await ctx.docker.removeVaultVolume(session.id);
+    }
+
     const result = {
       session_id: session.id,
       status: "stopped" as const,
       total_usage: session.totalUsage,
+      vault_volume_removed: session.vaultName ? cleanupVolume : undefined,
     };
 
     ctx.sessions.remove(session.id);
@@ -652,8 +679,9 @@ export function createServer(ctx: AppContext): Hono {
     let startupComplete = false;
     logger.info("orchestrator.api", "create_session_request", {
       session_id: sessionId,
-      source: body.repo ? "repo" : body.workspace ? "workspace" : "ephemeral",
+      source: body.repo ? "repo" : body.vault ? "vault" : body.workspace ? "workspace" : "ephemeral",
       pinned: body.pinned,
+      vault: body.vault,
       request_id: requestId,
     });
 
@@ -793,6 +821,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
     model,
     repo: body.repo,
     workspace: body.workspace,
+    vault: body.vault,
     branch: body.branch,
     request_id: requestId,
   });
@@ -803,6 +832,23 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
   let containerId: string | undefined;
 
   try {
+    // If vault source is requested, spawn vault sync sidecar and wait for initial sync
+    if (body.vault) {
+      const obsidianAuthToken = ctx.env.OBSIDIAN_AUTH_TOKEN;
+      if (!obsidianAuthToken) {
+        throw new Error("OBSIDIAN_AUTH_TOKEN is required for vault sessions");
+      }
+      await ctx.docker.spawnVaultSidecar({
+        sessionId,
+        vaultName: body.vault,
+        image: ctx.env.VAULT_SYNC_IMAGE || "vault-sync:latest",
+        network: ctx.network,
+        obsidianAuthToken,
+        e2eePassword: ctx.env.OBSIDIAN_E2EE_PASSWORD,
+      });
+      await ctx.docker.waitForVaultSync(sessionId);
+    }
+
     containerId = await ctx.docker.spawn({
       sessionId,
       image: ctx.runnerImage,
@@ -813,6 +859,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       repo: body.repo,
       branch: body.branch,
       workspace: body.workspace,
+      vault: body.vault,
       model,
       systemPrompt: body.systemPrompt,
       appendSystemPrompt: body.appendSystemPrompt,
@@ -833,6 +880,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       repo: body.repo,
       branch: body.branch,
       workspace: body.workspace,
+      vaultName: body.vault,
       model,
       systemPrompt: body.systemPrompt,
       maxTurns,
@@ -845,6 +893,8 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       session_id: sessionId,
       error: err instanceof Error ? err.message : String(err),
     });
+    // Clean up sidecar if vault session failed
+    await ctx.docker.killSidecar(sessionId).catch(() => undefined);
     if (containerId) {
       await ctx.docker.kill(sessionId).catch(() => undefined);
     }

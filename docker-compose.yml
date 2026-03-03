@@ -24,9 +24,21 @@ services:
       - SESSIONS_VOLUME=claude-sessions
       - SESSIONS_PATH=/data/sessions
       - DB_PATH=/app/data/orchestrator.db
+      # Vault sync (optional — set in .env if using vault source type)
+      # - OBSIDIAN_AUTH_TOKEN=
+      # - OBSIDIAN_E2EE_PASSWORD=
+      - VAULT_SYNC_IMAGE=vault-sync:latest
     networks:
       - claude-net
     restart: unless-stopped
+
+  vault-sync:
+    build:
+      context: .
+      dockerfile: packages/orchestrator/Dockerfile.vault-sync
+    image: vault-sync:latest
+    profiles:
+      - build-only
 
 volumes:
   claude-sessions:
