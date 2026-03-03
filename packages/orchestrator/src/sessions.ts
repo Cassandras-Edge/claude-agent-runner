@@ -20,6 +20,7 @@ export class SessionManager {
     repo?: string;
     branch?: string;
     workspace?: string;
+    vaultName?: string;
     model: string;
     systemPrompt?: string;
     maxTurns?: number;
@@ -28,24 +29,27 @@ export class SessionManager {
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, model, system_prompt, max_turns, forked_from, created_at, last_activity)
-      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, vault_name, model, system_prompt, max_turns, forked_from, created_at, last_activity)
+      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, containerId, oauthTokenIndex,
       config.name ?? null,
       config.pinned ? 1 : 0,
       config.repo ?? null, config.branch ?? null, config.workspace ?? null,
+      config.vaultName ?? null,
       config.model, config.systemPrompt ?? null, config.maxTurns ?? null,
       config.forkedFrom ?? null,
       now, now,
     );
+    const sourceType = config.repo ? "repo" : config.vaultName ? "vault" : config.workspace ? "workspace" : "ephemeral";
     logger.info("orchestrator.session", "created_session", {
       session_id: id,
       container_id: containerId,
       model: config.model,
-      source_type: config.repo ? "repo" : config.workspace ? "workspace" : "ephemeral",
+      source_type: sourceType,
       pinned: !!config.pinned,
       forked_from: config.forkedFrom,
+      vault_name: config.vaultName,
     });
 
     return this.get(id)!;

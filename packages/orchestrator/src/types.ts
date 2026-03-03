@@ -45,6 +45,7 @@ export interface Session {
   repo?: string;
   branch?: string;
   workspace?: string;
+  vaultName?: string;
   model: string;
   systemPrompt?: string;
   maxTurns?: number;

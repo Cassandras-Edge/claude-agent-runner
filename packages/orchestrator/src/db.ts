@@ -78,6 +78,7 @@ export interface SessionRow {
   context_tokens: number;
   compact_count: number;
   last_compact_at: string | null;
+  vault_name: string | null;
 }
 
 // Idempotent migrations for columns added after initial schema
@@ -87,6 +88,7 @@ const MIGRATIONS = [
   "ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE sessions ADD COLUMN compact_count INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE sessions ADD COLUMN last_compact_at TEXT",
+  "ALTER TABLE sessions ADD COLUMN vault_name TEXT",
 ];
 
 function runMigrations(db: Database.Database): void {
@@ -180,5 +182,6 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     contextTokens: row.context_tokens ?? 0,
     compactCount: row.compact_count ?? 0,
     lastCompactAt: row.last_compact_at ? new Date(row.last_compact_at) : undefined,
+    vaultName: row.vault_name ?? undefined,
   };
 }

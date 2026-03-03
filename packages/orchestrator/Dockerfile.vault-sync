@@ -1,0 +1,7 @@
+FROM node:22-alpine
+
+RUN npm install -g obsidian-headless
+
+WORKDIR /vault
+
+CMD ["sh", "-c", "ob sync-setup --vault \"$VAULT_NAME\" --path /vault --password \"$VAULT_E2EE_PASSWORD\" --device-name \"runner-$SESSION_ID\" && ob sync --continuous --path /vault"]
