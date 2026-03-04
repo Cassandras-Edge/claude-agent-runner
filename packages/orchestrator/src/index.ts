@@ -9,6 +9,7 @@ import { TokenPool } from "./token-pool.js";
 import { openDb } from "./db.js";
 import { attachClientWs } from "./client-ws.js";
 import { AutoCompactor } from "./auto-compact.js";
+import { WarmPool } from "./warm-pool.js";
 import { logger } from "./logger.js";
 
 // --- Config ---
@@ -30,6 +31,8 @@ const DB_PATH = process.env.DB_PATH || "/app/data/orchestrator.db";
 const SESSIONS_VOLUME = process.env.SESSIONS_VOLUME || "claude-sessions";
 // Where the sessions volume is mounted on the orchestrator (read-only, for transcript API)
 const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
+
+const WARM_POOL_SIZE = parseInt(process.env.WARM_POOL_SIZE || "0", 10);
 
 // --- Token pool ---
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -76,7 +79,32 @@ bridge.on("context_state", (sessionId: string, contextTokens: number) => {
 bridge.on("status", (sessionId: string, status: string) => {
   autoCompactor.onStatusChange(sessionId, status);
 });
-logger.info("orchestrator.bootstrap", "session manager, docker manager, ws bridge, and auto-compactor initialized");
+// --- Warm pool (optional) ---
+let warmPool: WarmPool | undefined;
+if (WARM_POOL_SIZE > 0) {
+  warmPool = new WarmPool({
+    targetSize: WARM_POOL_SIZE,
+    docker,
+    bridge,
+    tokenPool,
+    runnerImage: RUNNER_IMAGE,
+    orchestratorWsUrl: ORCHESTRATOR_WS_URL,
+    network: NETWORK,
+    sessionsVolume: SESSIONS_VOLUME,
+    env: runnerEnv,
+  });
+
+  // Track warm container readiness from bridge status events
+  bridge.on("status", (sessionId: string, status: string) => {
+    if (status === "ready" && warmPool?.isWarmId(sessionId)) {
+      warmPool.markReady(sessionId);
+    }
+  });
+}
+
+logger.info("orchestrator.bootstrap", "session manager, docker manager, ws bridge, and auto-compactor initialized", {
+  warm_pool_size: WARM_POOL_SIZE,
+});
 
 // Reconcile persisted sessions against live Docker state on startup.
 const persistedSessions = sessions.list();
@@ -130,7 +158,17 @@ const app = createServer({
   messageTimeoutMs: MESSAGE_TIMEOUT_MS,
   maxActiveSessions: MAX_ACTIVE_SESSIONS,
   startedAt: new Date(),
+  warmPool,
 });
+
+// Fill warm pool after network is ready
+if (warmPool) {
+  warmPool.refill().catch((err) => {
+    logger.error("orchestrator.bootstrap", "warm_pool_initial_fill_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
+}
 
 // --- Idle timeout sweep ---
 
@@ -160,6 +198,9 @@ async function shutdown() {
   logger.info("orchestrator.shutdown", "shutting_down");
   clearInterval(idleSweep);
   autoCompactor.destroy();
+  if (warmPool) {
+    await warmPool.destroy();
+  }
   clientWss.close();
   bridge.close();
   if (CLEANUP_RUNNERS_ON_EXIT) {

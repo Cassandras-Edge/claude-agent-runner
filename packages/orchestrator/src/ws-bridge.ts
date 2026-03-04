@@ -478,6 +478,39 @@ export class WsBridge extends EventEmitter {
     });
   }
 
+  /** Rekey a connection from one session ID to another (used by warm pool adoption). */
+  rekeyConnection(oldId: string, newId: string): boolean {
+    const ws = this.connections.get(oldId);
+    if (!ws) return false;
+    this.connections.delete(oldId);
+    this.connections.set(newId, ws);
+    this.sessions.setWs(newId, ws);
+    logger.info("orchestrator.ws_bridge", "rekey_connection", { old_id: oldId, new_id: newId });
+    return true;
+  }
+
+  /** Send an adopt command to a warm runner container. */
+  sendAdopt(
+    warmId: string,
+    realId: string,
+    oauthToken: string,
+    config: Record<string, any>,
+  ): boolean {
+    const ws = this.connections.get(warmId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "adopt_target_not_connected", { warm_id: warmId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "adopt",
+      session_id: realId,
+      oauth_token: oauthToken,
+      config,
+    }));
+    logger.info("orchestrator.ws_bridge", "sent_adopt_command", { warm_id: warmId, real_id: realId });
+    return true;
+  }
+
   /** Attach a database reference for persisting snapshots. */
   setDb(db: Database.Database): void {
     this.db = db;

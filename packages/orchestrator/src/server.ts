@@ -36,6 +36,7 @@ interface AppContext {
   messageTimeoutMs: number;
   maxActiveSessions?: number;
   startedAt: Date;
+  warmPool?: import("./warm-pool.js").WarmPool;
 }
 
 export function createServer(ctx: AppContext): Hono {
@@ -68,6 +69,7 @@ export function createServer(ctx: AppContext): Hono {
       runner_image: ctx.runnerImage,
       docker_connected: dockerConnected,
       max_active_sessions: ctx.maxActiveSessions ?? null,
+      warm_pool: ctx.warmPool?.stats ?? null,
     });
   });
 
@@ -826,6 +828,58 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
     request_id: requestId,
   });
 
+  // Try warm pool adoption (only for sessions without workspace/additionalDirectories/vault bind mounts)
+  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length && !body.vault;
+  if (canUseWarmPool) {
+    const warmEntry = ctx.warmPool!.adopt();
+    if (warmEntry) {
+      // Release warm container's token and assign a fresh one for the real session
+      ctx.tokenPool.release(warmEntry.warmId);
+      const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
+
+      // Send adopt command with real session config
+      const adoptConfig = {
+        repo: body.repo,
+        branch: body.branch,
+        gitToken: ctx.env.GIT_TOKEN || ctx.env.GITHUB_TOKEN,
+        model,
+        systemPrompt: body.systemPrompt,
+        appendSystemPrompt: body.appendSystemPrompt,
+        maxTurns,
+        thinking: body.thinking,
+        allowedTools: body.allowedTools,
+        disallowedTools: body.disallowedTools,
+        compactInstructions: body.compactInstructions,
+        permissionMode: body.permissionMode,
+        mcpServers: body.mcpServers,
+        allowedPaths: body.allowedPaths,
+      };
+
+      ctx.bridge.sendAdopt(warmEntry.warmId, sessionId, token, adoptConfig);
+      ctx.bridge.rekeyConnection(warmEntry.warmId, sessionId);
+      ctx.docker.rekeySession(warmEntry.warmId, sessionId);
+
+      const session = ctx.sessions.create(sessionId, warmEntry.containerId, tokenIndex, {
+        name: body.name?.trim(),
+        pinned: body.pinned,
+        repo: body.repo,
+        branch: body.branch,
+        workspace: body.workspace,
+        model,
+        systemPrompt: body.systemPrompt,
+        maxTurns,
+      });
+
+      logger.info("orchestrator.session", "session_adopted_from_warm_pool", {
+        session_id: sessionId,
+        warm_id: warmEntry.warmId,
+        request_id: requestId,
+      });
+      return { session, containerId: warmEntry.containerId };
+    }
+  }
+
+  // Cold path: spawn a new container
   // Assign an OAuth token from the pool for this session
   const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
   const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };

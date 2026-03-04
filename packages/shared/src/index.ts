@@ -310,6 +310,29 @@ export interface OrchestratorGetCommandsCommand extends WsCorrelation {
   type: "get_commands";
 }
 
+/** Orchestrator → Runner: adopt a warm container for a real session */
+export interface OrchestratorAdoptCommand {
+  type: "adopt";
+  session_id: string;
+  oauth_token: string;
+  config: {
+    repo?: string;
+    branch?: string;
+    gitToken?: string;
+    model?: string;
+    systemPrompt?: string;
+    appendSystemPrompt?: string;
+    maxTurns?: number;
+    thinking?: boolean;
+    allowedTools?: string[];
+    disallowedTools?: string[];
+    compactInstructions?: string;
+    permissionMode?: string;
+    mcpServers?: Record<string, { command: string; args?: string[] }>;
+    allowedPaths?: string[];
+  };
+}
+
 /** Runner → Orchestrator: available slash commands/skills */
 export interface RunnerCommandsResultMessage extends WsCorrelation {
   type: "commands_result";
@@ -327,7 +350,8 @@ export type OrchestratorCommand =
   | OrchestratorRewindCommand
   | OrchestratorSetOptionsCommand
   | OrchestratorPermissionResponseCommand
-  | OrchestratorGetCommandsCommand;
+  | OrchestratorGetCommandsCommand
+  | OrchestratorAdoptCommand;
 
 // --- Context Snapshot Types ---
 
