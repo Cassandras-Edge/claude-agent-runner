@@ -5,8 +5,8 @@ metadata:
   namespace: claude-runner
 spec:
   accessModes:
-    # RWX for multi-node (requires NFS/Longhorn). For single-node k3s, RWO works too.
-    - ReadWriteMany
+    # RWO for single-node k3s (local-path). Change to ReadWriteMany for multi-node (requires NFS/Longhorn).
+    - ReadWriteOnce
   resources:
     requests:
       storage: 10Gi
