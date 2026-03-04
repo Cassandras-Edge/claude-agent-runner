@@ -8,6 +8,7 @@ import type { RunnerEvent } from "./types.js";
 import type { TenantManager } from "./tenants.js";
 import { authenticateWs } from "./auth.js";
 import { logger, runWithLogContext } from "./logger.js";
+import * as metrics from "./metrics.js";
 
 // --- Client → Server frame types ---
 
@@ -147,6 +148,8 @@ export function attachClientWs(
     const remoteAddr = request.headers["x-forwarded-for"] as string || request.socket.remoteAddress || "unknown";
     const tenantId: string | undefined = (ws as any)._tenantId;
 
+    metrics.wsConnectionsActive.inc();
+
     runWithLogContext({ traceId: connectionId, connectionId }, () => {
       logger.event("client-ws", "client_connected", {
         connection_id: connectionId,
@@ -178,6 +181,7 @@ export function attachClientWs(
       });
 
       ws.on("close", () => {
+        metrics.wsConnectionsActive.dec();
         const subCount = subscriptions.size;
         // Tear down all subscriptions
         for (const cleanup of subscriptions.values()) {

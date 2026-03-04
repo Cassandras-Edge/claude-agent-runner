@@ -3,6 +3,7 @@ import type { Session, SessionStatus, Usage } from "./types.js";
 import type { SessionRow } from "./db.js";
 import { rowToSession } from "./db.js";
 import { logger } from "./logger.js";
+import * as metrics from "./metrics.js";
 
 export class SessionManager {
   private db: Database.Database;
@@ -125,6 +126,14 @@ export class SessionManager {
         cost_usd = cost_usd + ?
       WHERE id = ?
     `).run(usage.input_tokens, usage.output_tokens, usage.cost_usd, id);
+
+    // Metrics — look up session for model/tenant labels
+    const session = this.get(id);
+    const model = session?.model || "unknown";
+    const tenantId = session?.tenantId || "";
+    if (usage.input_tokens) metrics.tokensConsumedTotal.inc({ type: "input", model, tenant_id: tenantId }, usage.input_tokens);
+    if (usage.output_tokens) metrics.tokensConsumedTotal.inc({ type: "output", model, tenant_id: tenantId }, usage.output_tokens);
+    if (usage.cost_usd) metrics.costUsdTotal.inc({ model, tenant_id: tenantId }, usage.cost_usd);
   }
 
   updateContextTokens(id: string, tokens: number): void {

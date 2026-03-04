@@ -21,6 +21,7 @@ import { createAuthMiddleware } from "./auth.js";
 import { getLogContext, logger, runWithLogContext } from "./logger.js";
 import type Database from "better-sqlite3";
 import { listSnapshots, getSnapshot } from "./db.js";
+import * as metrics from "./metrics.js";
 
 interface AppContext {
   sessions: SessionManager;
@@ -93,6 +94,26 @@ export function createServer(ctx: AppContext): Hono {
       max_active_sessions: ctx.maxActiveSessions ?? null,
       warm_pool: ctx.warmPool?.stats ?? null,
     });
+  });
+
+  // --- Metrics ---
+
+  app.get("/metrics", async (c) => {
+    const metricsOutput = await metrics.register.metrics();
+    return new Response(metricsOutput, {
+      headers: { "Content-Type": metrics.register.contentType },
+    });
+  });
+
+  // --- API request metrics middleware ---
+
+  app.use("*", async (c, next) => {
+    const start = performance.now();
+    await next();
+    const duration = (performance.now() - start) / 1000;
+    const path = normalizePath(c.req.path);
+    metrics.apiRequestsTotal.inc({ method: c.req.method, path, status: String(c.res.status) });
+    metrics.apiRequestDurationSeconds.observe({ method: c.req.method, path }, duration);
   });
 
   // --- Sessions: List ---
@@ -692,9 +713,15 @@ export function createServer(ctx: AppContext): Hono {
 
     try {
       await ensureCapacity(ctx);
+      const spawnStart = performance.now();
       await spawnSession(ctx, sessionId, body, requestId, tenant?.id);
       await waitForReady(ctx, sessionId, undefined, requestId);
       startupComplete = true;
+      const sourceType = body.repo ? "repo" : body.vault ? "vault" : body.workspace ? "workspace" : "ephemeral";
+      metrics.spawnDurationSeconds.observe(
+        { backend: ctx.docker.constructor.name === "K8sManager" ? "k8s" : "docker", source_type: sourceType },
+        (performance.now() - spawnStart) / 1000,
+      );
       logger.info("orchestrator.api", "session_ready", { session_id: sessionId, request_id: requestId });
 
       // If no message, just return the ready session
@@ -926,6 +953,13 @@ export function createServer(ctx: AppContext): Hono {
 
 // --- Helpers ---
 
+/** Normalize path for metrics labels — collapse IDs into :id to keep cardinality bounded. */
+function normalizePath(path: string): string {
+  return path
+    .replace(/\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, "/:id")
+    .replace(/\/snapshots\/\d+/g, "/snapshots/:snapId");
+}
+
 async function parseSessionRequest(c: any, sessions?: SessionManager, tenantId?: string): Promise<SessionRequest | { error: ErrorResponse; status: any }> {
   let body: SessionRequest;
   try {
@@ -1010,6 +1044,10 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
         tenantId,
       });
 
+      metrics.warmPoolHitsTotal.inc();
+      const sourceType = body.repo ? "repo" : body.vault ? "vault" : body.workspace ? "workspace" : "ephemeral";
+      metrics.sessionsCreatedTotal.inc({ model, source_type: sourceType, tenant_id: tenantId || "" });
+
       logger.info("orchestrator.session", "session_adopted_from_warm_pool", {
         session_id: sessionId,
         warm_id: warmEntry.warmId,
@@ -1066,6 +1104,10 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       maxTurns,
       tenantId,
     });
+
+    metrics.warmPoolMissesTotal.inc();
+    const sourceType = body.repo ? "repo" : body.vault ? "vault" : body.workspace ? "workspace" : "ephemeral";
+    metrics.sessionsCreatedTotal.inc({ model, source_type: sourceType, tenant_id: tenantId || "" });
 
     logger.debug("orchestrator.session", "session_db_record_created", { session_id: sessionId, request_id: requestId });
     return { session, containerId };
