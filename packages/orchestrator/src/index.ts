@@ -4,6 +4,8 @@ import { serve } from "@hono/node-server";
 import { createServer } from "./server.js";
 import { SessionManager } from "./sessions.js";
 import { DockerManager } from "./docker.js";
+import type { ContainerManager } from "./docker.js";
+import { K8sManager } from "./k8s-manager.js";
 import { WsBridge } from "./ws-bridge.js";
 import { TokenPool } from "./token-pool.js";
 import { openDb } from "./db.js";
@@ -33,6 +35,7 @@ const SESSIONS_VOLUME = process.env.SESSIONS_VOLUME || "claude-sessions";
 const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
 
 const WARM_POOL_SIZE = parseInt(process.env.WARM_POOL_SIZE || "0", 10);
+const RUNNER_BACKEND = (process.env.RUNNER_BACKEND || "docker") as "docker" | "k8s";
 
 // --- Token pool ---
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -68,7 +71,15 @@ logger.info("orchestrator.storage", "opened sqlite database", { path: DB_PATH })
 // --- Initialize ---
 
 const sessions = new SessionManager(db);
-const docker = new DockerManager();
+const docker: ContainerManager = RUNNER_BACKEND === "k8s"
+  ? new K8sManager({
+      sessionsPvcName: SESSIONS_VOLUME,
+      cpuRequest: process.env.RUNNER_CPU_REQUEST,
+      cpuLimit: process.env.RUNNER_CPU_LIMIT,
+      memoryRequest: process.env.RUNNER_MEMORY_REQUEST,
+      memoryLimit: process.env.RUNNER_MEMORY_LIMIT,
+    })
+  : new DockerManager();
 const bridge = new WsBridge(sessions, WS_PORT);
 bridge.setDb(db);
 const autoCompactor = new AutoCompactor(bridge, sessions);
@@ -101,7 +112,8 @@ if (WARM_POOL_SIZE > 0) {
   });
 }
 
-logger.info("orchestrator.bootstrap", "session manager, docker manager, ws bridge, and auto-compactor initialized", {
+logger.info("orchestrator.bootstrap", "session manager, container manager, ws bridge, and auto-compactor initialized", {
+  backend: RUNNER_BACKEND,
   warm_pool_size: WARM_POOL_SIZE,
 });
 
@@ -223,8 +235,9 @@ const httpServer = serve({ fetch: app.fetch, port: PORT }, (info) => {
   logger.info("orchestrator.server", "listening", {
     port: info.port,
     ws_port: WS_PORT,
+    runner_backend: RUNNER_BACKEND,
     runner_image: RUNNER_IMAGE,
-    docker_network: NETWORK,
+    docker_network: RUNNER_BACKEND === "docker" ? NETWORK : undefined,
     runner_ws_url: ORCHESTRATOR_WS_URL,
     idle_timeout_seconds: IDLE_TIMEOUT_MS / 1000,
     message_timeout_seconds: MESSAGE_TIMEOUT_MS / 1000,

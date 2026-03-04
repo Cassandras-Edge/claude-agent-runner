@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: claude-runner
+
+resources:
+  - namespace.yaml
+  - secrets.yaml
+  - pvc-sessions.yaml
+  - pvc-orchestrator.yaml
+  - orchestrator-rbac.yaml
+  - orchestrator-deployment.yaml
+  - orchestrator-service.yaml
+  # runner-pod-template.yaml is NOT included — it's a reference doc only

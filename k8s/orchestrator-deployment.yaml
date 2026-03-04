@@ -1,0 +1,113 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-orchestrator
+  namespace: claude-runner
+  labels:
+    app: claude-orchestrator
+spec:
+  replicas: 1 # SQLite — single writer only
+  selector:
+    matchLabels:
+      app: claude-orchestrator
+  template:
+    metadata:
+      labels:
+        app: claude-orchestrator
+    spec:
+      serviceAccountName: claude-orchestrator
+      containers:
+        - name: orchestrator
+          image: claude-orchestrator:latest
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: ws
+              containerPort: 8081
+          env:
+            - name: PORT
+              value: "8080"
+            - name: WS_PORT
+              value: "8081"
+            - name: RUNNER_BACKEND
+              value: "k8s"
+            - name: K8S_NAMESPACE
+              value: "claude-runner"
+            - name: RUNNER_IMAGE
+              value: "claude-runner:latest"
+            - name: ORCHESTRATOR_HOST
+              value: "claude-orchestrator"
+            - name: DB_PATH
+              value: "/data/orchestrator.db"
+            - name: SESSIONS_VOLUME
+              value: "claude-sessions"
+            - name: SESSIONS_PATH
+              value: "/data/sessions"
+            - name: WARM_POOL_SIZE
+              value: "2"
+            - name: IDLE_TIMEOUT_MS
+              value: "300000"
+            - name: CLEANUP_RUNNERS_ON_EXIT
+              value: "true"
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: claude-tokens
+                  key: CLAUDE_CODE_OAUTH_TOKEN
+            - name: GIT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-tokens
+                  key: GIT_TOKEN
+                  optional: true
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: git-tokens
+                  key: GITHUB_TOKEN
+                  optional: true
+            - name: OBSIDIAN_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: obsidian-auth
+                  key: OBSIDIAN_AUTH_TOKEN
+                  optional: true
+            - name: OBSIDIAN_E2EE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: obsidian-auth
+                  key: OBSIDIAN_E2EE_PASSWORD
+                  optional: true
+          volumeMounts:
+            - name: orchestrator-data
+              mountPath: /data
+            - name: sessions
+              mountPath: /data/sessions
+              readOnly: true
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: orchestrator-data
+          persistentVolumeClaim:
+            claimName: claude-orchestrator-data
+        - name: sessions
+          persistentVolumeClaim:
+            claimName: claude-sessions
+            readOnly: true

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-sessions
+  namespace: claude-runner
+spec:
+  accessModes:
+    # RWX for multi-node (requires NFS/Longhorn). For single-node k3s, RWO works too.
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  # Use default StorageClass (local-path for k3s, or specify explicitly)
+  # storageClassName: longhorn
