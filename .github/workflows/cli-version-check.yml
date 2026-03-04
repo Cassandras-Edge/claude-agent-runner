@@ -1,0 +1,356 @@
+name: CLI Version Check
+
+# Check for new Claude Code releases and attempt patch compatibility
+on:
+  schedule:
+    - cron: "0 */6 * * *" # every 6 hours
+  workflow_dispatch: # manual trigger
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  check-version:
+    name: Check for new Claude Code version
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.check.outputs.new_version }}
+      current_version: ${{ steps.check.outputs.current_version }}
+      has_update: ${{ steps.check.outputs.has_update }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check npm for latest version
+        id: check
+        run: |
+          # Get current pinned version from Dockerfile
+          CURRENT=$(grep -oP '@anthropic-ai/claude-code@\K[0-9.]+' packages/runner/Dockerfile | head -1)
+          echo "current_version=$CURRENT" >> "$GITHUB_OUTPUT"
+
+          # Get latest version from npm
+          LATEST=$(npm view @anthropic-ai/claude-code version 2>/dev/null)
+          echo "new_version=$LATEST" >> "$GITHUB_OUTPUT"
+
+          echo "Current: $CURRENT"
+          echo "Latest:  $LATEST"
+
+          if [ "$CURRENT" != "$LATEST" ]; then
+            echo "has_update=true" >> "$GITHUB_OUTPUT"
+            echo "New version available!"
+          else
+            echo "has_update=false" >> "$GITHUB_OUTPUT"
+            echo "Already up to date."
+          fi
+
+      - name: Check for existing issue
+        if: steps.check.outputs.has_update == 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.check.outputs.new_version }}"
+          EXISTING=$(gh issue list --search "Claude Code $VERSION" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "issue_number=$EXISTING" >> "$GITHUB_OUTPUT"
+            echo "Issue #$EXISTING already exists for v$VERSION"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  test-patches:
+    name: Test patches against new version
+    needs: check-version
+    if: needs.check-version.outputs.has_update == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      patches_ok: ${{ steps.test.outputs.patches_ok }}
+      patch_output: ${{ steps.test.outputs.patch_output }}
+      failed_patches: ${{ steps.test.outputs.failed_patches }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Download new CLI version
+        id: download
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          echo "Downloading Claude Code v$VERSION..."
+
+          npm pack @anthropic-ai/claude-code@$VERSION --pack-destination /tmp
+          mkdir -p /tmp/claude-code
+          tar xzf /tmp/anthropic-ai-claude-code-*.tgz -C /tmp/claude-code
+
+          CLI_PATH="/tmp/claude-code/package/cli.js"
+          if [ ! -f "$CLI_PATH" ]; then
+            echo "cli.js not found in package"
+            ls -la /tmp/claude-code/package/
+            exit 1
+          fi
+
+          # Copy to snapshots for the test
+          cp "$CLI_PATH" "packages/runner/patches/snapshots/cli-$VERSION.js"
+          echo "cli_path=packages/runner/patches/snapshots/cli-$VERSION.js" >> "$GITHUB_OUTPUT"
+          echo "Downloaded and extracted cli.js ($(du -h "$CLI_PATH" | cut -f1))"
+
+      - name: Test patches (dry-run)
+        id: test
+        continue-on-error: true
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          cd packages/runner/patches
+
+          echo "Testing patches against CLI v$VERSION..."
+          OUTPUT=$(bun run scripts/patch-all.js --binary "snapshots/cli-$VERSION.js" --js-only --dry-run 2>&1) || true
+          echo "$OUTPUT"
+
+          # Save full output
+          echo "patch_output<<PATCH_EOF" >> "$GITHUB_OUTPUT"
+          echo "$OUTPUT" >> "$GITHUB_OUTPUT"
+          echo "PATCH_EOF" >> "$GITHUB_OUTPUT"
+
+          # Check for failures
+          FAILED=$(echo "$OUTPUT" | grep "SKIP:" | sed 's/.*SKIP: //' | sed 's/ —.*//' || true)
+          if [ -n "$FAILED" ]; then
+            echo "patches_ok=false" >> "$GITHUB_OUTPUT"
+            echo "failed_patches=$FAILED" >> "$GITHUB_OUTPUT"
+            echo "Failed patches: $FAILED"
+          else
+            echo "patches_ok=true" >> "$GITHUB_OUTPUT"
+            echo "failed_patches=" >> "$GITHUB_OUTPUT"
+            echo "All patches passed!"
+          fi
+
+  create-issue:
+    name: Create issue for new version
+    needs: [check-version, test-patches]
+    if: needs.check-version.outputs.has_update == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      issue_number: ${{ steps.create.outputs.issue_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create or update issue
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          CURRENT="${{ needs.check-version.outputs.current_version }}"
+          PATCHES_OK="${{ needs.test-patches.outputs.patches_ok }}"
+          FAILED="${{ needs.test-patches.outputs.failed_patches }}"
+          PATCH_OUTPUT="${{ needs.test-patches.outputs.patch_output }}"
+
+          if [ "$PATCHES_OK" = "true" ]; then
+            TITLE="Claude Code v$VERSION: all patches compatible"
+            LABELS="cli-update,patches-ok"
+            STATUS_EMOJI="✅"
+            STATUS_TEXT="All patches apply cleanly against v$VERSION."
+            ACTION_TEXT="Safe to update. A PR will be created automatically."
+          else
+            TITLE="Claude Code v$VERSION: patch compatibility issue"
+            LABELS="cli-update,patches-broken"
+            STATUS_EMOJI="❌"
+            STATUS_TEXT="Some patches failed against v$VERSION."
+            ACTION_TEXT="@claude Please investigate the failed patches and create a PR with fixes. The failed patches are: $FAILED"
+          fi
+
+          BODY="$(cat <<ISSUE_EOF
+          ## Claude Code v$VERSION Released
+
+          **Current pinned version:** v$CURRENT
+          **New version:** v$VERSION
+          **Patch status:** $STATUS_EMOJI $STATUS_TEXT
+
+          ### Patch dry-run output
+
+          \`\`\`
+          $PATCH_OUTPUT
+          \`\`\`
+
+          ### Failed patches
+
+          $(if [ -n "$FAILED" ]; then echo "$FAILED"; else echo "None — all patches passed."; fi)
+
+          ### Action needed
+
+          $ACTION_TEXT
+
+          ---
+          *This issue was created automatically by the CLI version check workflow.*
+          ISSUE_EOF
+          )"
+
+          # Check for existing issue
+          EXISTING=$(gh issue list --search "Claude Code v$VERSION" --state open --json number --jq '.[0].number // empty')
+
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already exists, adding comment"
+            gh issue comment "$EXISTING" --body "Patch retest results:
+
+          **Status:** $STATUS_EMOJI $STATUS_TEXT
+
+          \`\`\`
+          $PATCH_OUTPUT
+          \`\`\`"
+            echo "issue_number=$EXISTING" >> "$GITHUB_OUTPUT"
+          else
+            ISSUE_URL=$(gh issue create --title "$TITLE" --body "$BODY" --label "$LABELS" 2>&1)
+            ISSUE_NUM=$(echo "$ISSUE_URL" | grep -oP '\d+$')
+            echo "issue_number=$ISSUE_NUM" >> "$GITHUB_OUTPUT"
+            echo "Created issue #$ISSUE_NUM"
+          fi
+
+  auto-update-pr:
+    name: Create PR for compatible update
+    needs: [check-version, test-patches, create-issue]
+    if: needs.test-patches.outputs.patches_ok == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create update branch and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          CURRENT="${{ needs.check-version.outputs.current_version }}"
+          ISSUE_NUM="${{ needs.create-issue.outputs.issue_number }}"
+          BRANCH="cli-update/v$VERSION"
+
+          # Configure git
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create branch
+          git checkout -b "$BRANCH"
+
+          # Update Dockerfile
+          sed -i "s/@anthropic-ai\/claude-code@$CURRENT/@anthropic-ai\/claude-code@$VERSION/g" packages/runner/Dockerfile
+
+          # Update engine test snapshot reference if present
+          sed -i "s/cli-$CURRENT/cli-$VERSION/g" packages/runner/patches/__tests__/engine.test.js
+
+          # Commit and push
+          git add -A
+          git commit -m "Update Claude Code CLI to v$VERSION
+
+          All patches verified compatible via dry-run.
+          Closes #$ISSUE_NUM"
+
+          git push origin "$BRANCH"
+
+          # Create PR
+          gh pr create \
+            --title "Update Claude Code CLI to v$VERSION" \
+            --body "$(cat <<PR_EOF
+          ## Summary
+          - Updates pinned Claude Code CLI from v$CURRENT to v$VERSION
+          - All patches verified compatible via automated dry-run
+
+          ## Patch compatibility
+          All ${patches_count:-5} patches apply cleanly. No spec changes needed.
+
+          Closes #$ISSUE_NUM
+
+          🤖 Generated by CLI version check workflow
+          PR_EOF
+          )" \
+            --label "cli-update"
+
+  attempt-fix:
+    name: Attempt patch fixes with Claude
+    needs: [check-version, test-patches, create-issue]
+    if: needs.test-patches.outputs.patches_ok == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup tools
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+
+          # Install bun for patch testing
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> $GITHUB_PATH
+
+          # Download new CLI snapshot
+          npm pack @anthropic-ai/claude-code@$VERSION --pack-destination /tmp
+          mkdir -p /tmp/claude-code
+          tar xzf /tmp/anthropic-ai-claude-code-*.tgz -C /tmp/claude-code
+          cp /tmp/claude-code/package/cli.js "packages/runner/patches/snapshots/cli-$VERSION.js"
+
+      - name: Create fix branch
+        run: |
+          VERSION="${{ needs.check-version.outputs.new_version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "cli-fix/v$VERSION"
+
+      - name: Run Claude to fix patches
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          direct_prompt: |
+            A new version of Claude Code CLI (v${{ needs.check-version.outputs.new_version }}) has been released and some patches are failing.
+
+            Current pinned version: v${{ needs.check-version.outputs.current_version }}
+            New version: v${{ needs.check-version.outputs.new_version }}
+            Failed patches: ${{ needs.test-patches.outputs.failed_patches }}
+
+            The new CLI snapshot is at: packages/runner/patches/snapshots/cli-${{ needs.check-version.outputs.new_version }}.js
+
+            Dry-run output:
+            ```
+            ${{ needs.test-patches.outputs.patch_output }}
+            ```
+
+            Please:
+            1. Read the MEMORY.md for context on the patch system
+            2. Investigate why the failed patches broke by comparing the new CLI against the patch specs
+            3. Update the spec.json files for the broken patches to work with the new CLI version
+            4. Test your fixes: `cd packages/runner/patches && bun run scripts/patch-all.js --binary snapshots/cli-${{ needs.check-version.outputs.new_version }}.js --js-only --dry-run`
+            5. Update the Dockerfile to pin the new version
+            6. Update the engine test snapshot reference
+            7. Commit all changes and create a PR that closes #${{ needs.create-issue.outputs.issue_number }}
+
+            Common breakage patterns:
+            - UUID import style changes (namespace.randomUUID() vs named import)
+            - MCP metadata restructured (flat vs nested)
+            - Symbol distances from anchors shift — may need to adjust extractors
+            - find_function content anchors may need updating if function internals changed
+
+            The patch specs are in packages/runner/patches/patches/*/spec.json
+            The engine is in packages/runner/patches/lib/engine.js
+            Step types: extract, find_replace, insert_after, insert_before, find_function, replace_in_function, wrap_function
+
+          allowed_tools: |
+            Bash(bun run:*)
+            Bash(cd packages/runner/patches:*)
+            Bash(git add:*)
+            Bash(git commit:*)
+            Bash(git push:*)
+            Bash(gh pr create:*)
+            Read
+            Edit
+            Glob
+            Grep
+            Write
