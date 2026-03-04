@@ -24,28 +24,16 @@ services:
       - SESSIONS_VOLUME=claude-sessions
       - SESSIONS_PATH=/data/sessions
       - DB_PATH=/app/data/orchestrator.db
-      - VAULTS_VOLUME=vaults-data
-      - VAULT_SYNC_IMAGE=vault-sync:latest
       - WARM_POOL_SIZE=1
     networks:
       - claude-net
     restart: unless-stopped
-
-  vault-sync:
-    build:
-      context: .
-      dockerfile: packages/orchestrator/Dockerfile.vault-sync
-    image: vault-sync:latest
-    profiles:
-      - build-only
 
 volumes:
   claude-sessions:
     name: claude-sessions
   claude-orchestrator-data:
     name: claude-orchestrator-data
-  vaults-data:
-    name: vaults-data
 
 networks:
   claude-net:
