@@ -57,7 +57,7 @@ const FORK_AT = process.env.RUNNER_FORK_AT;
 const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
 const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_MS || "90000", 10);
 const COMPACT_THRESHOLD_PCT = parseInt(process.env.RUNNER_COMPACT_THRESHOLD_PCT || "20", 10);
-const WORKSPACE = "/workspace";
+let WORKSPACE = "/workspace";
 
 // IPC socket path for live context surgery (mutable: changes on fork-and-steer)
 let MEM_SOCKET_PATH = process.env.CLAUDE_MEM_SOCKET || "/tmp/claude-mem.sock";
@@ -1554,7 +1554,7 @@ function connect(): void {
       if (cfg.allowedPaths !== undefined) ALLOWED_PATHS = cfg.allowedPaths || [];
 
       try {
-        // If vault is specified, grant ACL access and symlink /workspace
+        // If vault is specified, grant ACL access and point workspace to vault path
         if (cfg.vault) {
           const vaultPath = `/vaults/${cfg.vault}`;
           logger.info("runner.ws", "vault_acl_grant", { session_id: SESSION_ID, vault: cfg.vault, path: vaultPath });
@@ -1573,22 +1573,12 @@ function connect(): void {
           } catch (aclErr) {
             const msg = aclErr instanceof Error ? aclErr.message : String(aclErr);
             logger.warn("runner.ws", "vault_acl_grant_failed", { session_id: SESSION_ID, vault: cfg.vault, error: msg });
-            // Continue anyway — the sidecar may set group permissions that work without ACL
+            // Continue anyway — the sidecar sets group permissions that work without ACL
           }
 
-          // Symlink /workspace → /vaults/<vault-name>
-          try {
-            execSync(`rm -rf /workspace && ln -sfn ${JSON.stringify(vaultPath)} /workspace`, {
-              stdio: "pipe",
-              timeout: 5_000,
-            });
-          } catch (linkErr) {
-            const msg = linkErr instanceof Error ? linkErr.message : String(linkErr);
-            logger.error("runner.ws", "vault_symlink_failed", { session_id: SESSION_ID, vault: cfg.vault, error: msg });
-            throw new Error(`Failed to symlink workspace to vault: ${msg}`);
-          }
-
-          logger.info("runner.ws", "vault_workspace_ready", { session_id: SESSION_ID, vault: cfg.vault });
+          // Point workspace directly at the vault path on the shared volume
+          WORKSPACE = vaultPath;
+          logger.info("runner.ws", "vault_workspace_ready", { session_id: SESSION_ID, vault: cfg.vault, workspace: WORKSPACE });
         }
 
         // Clone repo if needed
@@ -1600,6 +1590,15 @@ function connect(): void {
         if (!existsSync(WORKSPACE)) {
           mkdirSync(WORKSPACE, { recursive: true });
         }
+
+        // Close old warm-pool session and create fresh one with the correct workspace/config.
+        // We must clear sdkSessionId so createOrResumeSession creates a new session
+        // (not resume the warm pool's ephemeral session with the wrong cwd).
+        if (session) {
+          session.close();
+          session = null;
+        }
+        sdkSessionId = undefined;
 
         // Eagerly create SDK session so first message is instant
         session = await createOrResumeSession(ws);

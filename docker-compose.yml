@@ -24,10 +24,9 @@ services:
       - SESSIONS_VOLUME=claude-sessions
       - SESSIONS_PATH=/data/sessions
       - DB_PATH=/app/data/orchestrator.db
-      # Vault sync (optional — set in .env if using vault source type)
-      # - OBSIDIAN_AUTH_TOKEN=
-      # - OBSIDIAN_E2EE_PASSWORD=
+      - VAULTS_VOLUME=vaults-data
       - VAULT_SYNC_IMAGE=vault-sync:latest
+      - WARM_POOL_SIZE=1
     networks:
       - claude-net
     restart: unless-stopped
@@ -45,6 +44,8 @@ volumes:
     name: claude-sessions
   claude-orchestrator-data:
     name: claude-orchestrator-data
+  vaults-data:
+    name: vaults-data
 
 networks:
   claude-net:

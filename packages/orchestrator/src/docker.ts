@@ -242,7 +242,7 @@ export class DockerManager {
 
   /**
    * Wait for a persistent vault sidecar to complete initial sync.
-   * Polls by exec'ing `ob sync-status` inside the sidecar container.
+   * Polls container logs for "Fully synced" and checks if the .obsidian dir exists.
    */
   async waitForVaultSync(vaultName: string, timeoutMs = 120_000): Promise<void> {
     const containerId = this.persistentSidecars.get(vaultName);
@@ -260,28 +260,44 @@ export class DockerManager {
     while (Date.now() < deadline) {
       try {
         const container = this.docker.getContainer(containerId);
+
+        // Check container logs for sync completion signals
+        const logStream = await container.logs({
+          stdout: true,
+          stderr: true,
+          tail: 50,
+        });
+        const logs = logStream.toString();
+
+        if (/fully synced/i.test(logs)) {
+          logger.info("orchestrator.docker", "vault_sync_complete", { vault_name: vaultName });
+          return;
+        }
+
+        // Also check if .obsidian dir exists (sync has run at least once)
         const exec = await container.exec({
-          Cmd: ["ob", "sync-status", "--path", vaultPath],
+          Cmd: ["test", "-d", `${vaultPath}/.obsidian`],
           AttachStdout: true,
           AttachStderr: true,
         });
         const stream = await exec.start({ Detach: false });
-
-        const output = await new Promise<string>((resolve) => {
-          let buf = "";
-          stream.on("data", (chunk: Buffer) => { buf += chunk.toString(); });
-          stream.on("end", () => resolve(buf));
-          // Safety timeout for the exec itself
-          setTimeout(() => resolve(buf), 10_000);
+        const exitInfo = await new Promise<number>((resolve) => {
+          stream.on("end", async () => {
+            try {
+              const inspectResult = await exec.inspect();
+              resolve(inspectResult.ExitCode ?? 1);
+            } catch { resolve(1); }
+          });
+          stream.resume(); // drain the stream
+          setTimeout(() => resolve(1), 5_000);
         });
 
-        // "synced" or "up to date" in output means initial sync is done
-        if (/synced|up.to.date/i.test(output)) {
-          logger.info("orchestrator.docker", "vault_sync_complete", { vault_name: vaultName });
+        if (exitInfo === 0) {
+          logger.info("orchestrator.docker", "vault_sync_complete", { vault_name: vaultName, method: "dir_exists" });
           return;
         }
       } catch (err: any) {
-        // Container might not be ready yet or exec failed — keep polling
+        // Container might not be ready yet — keep polling
         logger.debug("orchestrator.docker", "vault_sync_poll_error", {
           vault_name: vaultName,
           error: err?.message || String(err),
