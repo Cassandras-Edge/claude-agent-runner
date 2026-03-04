@@ -107,6 +107,25 @@ spec:
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 30
+        # --- Cloudflare Tunnel sidecar (optional) ---
+        # Uncomment to expose the orchestrator via Cloudflare Tunnel.
+        # See k8s/docs/cloudflare-tunnel.md for setup instructions.
+        # - name: cloudflared
+        #   image: cloudflare/cloudflared:2024.12.2
+        #   args: ["tunnel", "run"]
+        #   env:
+        #     - name: TUNNEL_TOKEN
+        #       valueFrom:
+        #         secretKeyRef:
+        #           name: cloudflare-tunnel
+        #           key: token
+        #   resources:
+        #     requests:
+        #       cpu: "50m"
+        #       memory: "64Mi"
+        #     limits:
+        #       cpu: "200m"
+        #       memory: "128Mi"
       volumes:
         - name: orchestrator-data
           persistentVolumeClaim:
