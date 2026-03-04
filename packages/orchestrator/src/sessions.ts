@@ -25,12 +25,13 @@ export class SessionManager {
     systemPrompt?: string;
     maxTurns?: number;
     forkedFrom?: string;
+    tenantId?: string;
   }): Session {
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, vault_name, model, system_prompt, max_turns, forked_from, created_at, last_activity)
-      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, vault_name, model, system_prompt, max_turns, forked_from, tenant_id, created_at, last_activity)
+      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, containerId, oauthTokenIndex,
       config.name ?? null,
@@ -39,6 +40,7 @@ export class SessionManager {
       config.vaultName ?? null,
       config.model, config.systemPrompt ?? null, config.maxTurns ?? null,
       config.forkedFrom ?? null,
+      config.tenantId ?? null,
       now, now,
     );
     const sourceType = config.repo ? "repo" : config.vaultName ? "vault" : config.workspace ? "workspace" : "ephemeral";
@@ -69,9 +71,11 @@ export class SessionManager {
     return session;
   }
 
-  list(): Session[] {
-    const rows = this.db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all() as SessionRow[];
-    logger.debug("orchestrator.session", "listed_sessions", { count: rows.length });
+  list(tenantId?: string): Session[] {
+    const rows = tenantId
+      ? this.db.prepare("SELECT * FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC").all(tenantId) as SessionRow[]
+      : this.db.prepare("SELECT * FROM sessions ORDER BY created_at DESC").all() as SessionRow[];
+    logger.debug("orchestrator.session", "listed_sessions", { count: rows.length, tenant_id: tenantId });
     return rows.map((row) => {
       const session = rowToSession(row);
       const rt = this.runtime.get(row.id);
@@ -148,7 +152,11 @@ export class SessionManager {
     return session;
   }
 
-  activeCount(): number {
+  activeCount(tenantId?: string): number {
+    if (tenantId) {
+      const row = this.db.prepare("SELECT COUNT(*) as count FROM sessions WHERE tenant_id = ? AND status NOT IN ('stopped', 'error')").get(tenantId) as { count: number };
+      return row.count;
+    }
     const row = this.db.prepare("SELECT COUNT(*) as count FROM sessions WHERE status NOT IN ('stopped', 'error')").get() as { count: number };
     return row.count;
   }
@@ -173,11 +181,11 @@ export class SessionManager {
     return row.max_idx ?? undefined;
   }
 
-  /** Rename a session. Returns false if the name is already taken by another session. */
-  rename(id: string, name: string): boolean {
-    const existing = this.db.prepare(
-      "SELECT id FROM sessions WHERE name = ? AND id != ?"
-    ).get(name, id) as { id: string } | undefined;
+  /** Rename a session. Returns false if the name is already taken by another session within the same tenant. */
+  rename(id: string, name: string, tenantId?: string): boolean {
+    const existing = tenantId
+      ? this.db.prepare("SELECT id FROM sessions WHERE name = ? AND id != ? AND tenant_id = ?").get(name, id, tenantId) as { id: string } | undefined
+      : this.db.prepare("SELECT id FROM sessions WHERE name = ? AND id != ?").get(name, id) as { id: string } | undefined;
     if (existing) return false;
 
     logger.info("orchestrator.session", "rename_session", { session_id: id, name });
@@ -185,8 +193,12 @@ export class SessionManager {
     return true;
   }
 
-  /** Check if a session name is already in use. */
-  nameExists(name: string): boolean {
+  /** Check if a session name is already in use within a tenant scope. */
+  nameExists(name: string, tenantId?: string): boolean {
+    if (tenantId) {
+      const row = this.db.prepare("SELECT id FROM sessions WHERE name = ? AND tenant_id = ?").get(name, tenantId) as { id: string } | undefined;
+      return !!row;
+    }
     const row = this.db.prepare("SELECT id FROM sessions WHERE name = ?").get(name) as { id: string } | undefined;
     return !!row;
   }
@@ -200,12 +212,18 @@ export class SessionManager {
    * Capacity-evictable sessions ordered from least-recently-active to most-recently-active.
    * Only ready/idle and not pinned sessions are candidates.
    */
-  evictableByLru(): Session[] {
-    const rows = this.db.prepare(`
-      SELECT * FROM sessions
-      WHERE status IN ('ready', 'idle') AND pinned = 0
-      ORDER BY last_activity ASC
-    `).all() as SessionRow[];
+  evictableByLru(tenantId?: string): Session[] {
+    const rows = tenantId
+      ? this.db.prepare(`
+          SELECT * FROM sessions
+          WHERE status IN ('ready', 'idle') AND pinned = 0 AND tenant_id = ?
+          ORDER BY last_activity ASC
+        `).all(tenantId) as SessionRow[]
+      : this.db.prepare(`
+          SELECT * FROM sessions
+          WHERE status IN ('ready', 'idle') AND pinned = 0
+          ORDER BY last_activity ASC
+        `).all() as SessionRow[];
     return rows.map((row) => rowToSession(row));
   }
 

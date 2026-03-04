@@ -65,6 +65,7 @@ export interface Session {
   contextTokens: number;
   compactCount: number;
   lastCompactAt?: Date;
+  tenantId?: string;
   ws?: WebSocket;
   pendingResolve?: (event: RunnerEvent) => void;
 }
