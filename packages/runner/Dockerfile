@@ -2,7 +2,7 @@ FROM node:22-alpine AS patcher
 
 # Install bun (runs patch-all.js) and Claude Code (source for JS extraction)
 RUN apk add --no-cache bash && \
-    npm install -g bun @anthropic-ai/claude-code@2.1.52 && \
+    npm install -g bun @anthropic-ai/claude-code@2.1.63 && \
     npm cache clean --force
 
 # Copy patch files
@@ -39,7 +39,7 @@ FROM node:22-alpine
 RUN apk add --no-cache git curl bash openssh-client
 
 # Install Claude Code CLI globally (required by agent SDK)
-RUN npm install -g @anthropic-ai/claude-code@2.1.52 && npm cache clean --force
+RUN npm install -g @anthropic-ai/claude-code@2.1.63 && npm cache clean --force
 
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
