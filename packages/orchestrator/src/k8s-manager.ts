@@ -20,6 +20,8 @@ export interface K8sManagerConfig {
   memoryLimit?: string;
   /** PVC name for sessions volume (mounted as /home/runner/.claude). */
   sessionsPvcName?: string;
+  /** Image pull policy for runner pods (default: unset, k8s default). */
+  imagePullPolicy?: string;
 }
 
 export class K8sManager implements ContainerManager {
@@ -149,6 +151,7 @@ export class K8sManager implements ContainerManager {
           {
             name: "runner",
             image: config.image,
+            imagePullPolicy: this.config.imagePullPolicy as any || undefined,
             env: envVars,
             volumeMounts: volumeMounts.length > 0 ? volumeMounts : undefined,
             resources: {
