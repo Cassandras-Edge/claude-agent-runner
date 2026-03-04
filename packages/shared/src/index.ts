@@ -319,6 +319,7 @@ export interface OrchestratorAdoptCommand {
     repo?: string;
     branch?: string;
     gitToken?: string;
+    vault?: string;
     model?: string;
     systemPrompt?: string;
     appendSystemPrompt?: string;

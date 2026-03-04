@@ -2,6 +2,11 @@ FROM node:22-alpine
 
 RUN npm install -g obsidian-headless
 
+# Create vaults group (GID 1000) matching runner containers for shared volume permissions
+RUN addgroup -g 1000 -S vaults
+
 WORKDIR /vault
 
-CMD ["sh", "-c", "ob sync-setup --vault \"$VAULT_NAME\" --path /vault --password \"$VAULT_E2EE_PASSWORD\" --device-name \"runner-$SESSION_ID\" && ob sync --continuous --path /vault"]
+# umask 007 ensures new files are owner+group rw, no world access.
+# Files created by ob sync will be owned root:vaults so runner can access via ACL grants.
+CMD ["sh", "-c", "umask 007 && ob sync-setup --vault \"$VAULT_NAME\" --path \"/vault/$VAULT_NAME\" --password \"$VAULT_E2EE_PASSWORD\" --device-name \"runner-${SIDECAR_ID:-$$}\" && chown -R root:vaults \"/vault/$VAULT_NAME\" && chmod -R g+rwX \"/vault/$VAULT_NAME\" && ob sync --continuous --path \"/vault/$VAULT_NAME\""]

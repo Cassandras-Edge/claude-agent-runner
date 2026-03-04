@@ -15,10 +15,10 @@ export interface SpawnConfig {
   env: Record<string, string>;
   network: string;
   sessionsVolume?: string;
+  vaultsVolume?: string;
   repo?: string;
   branch?: string;
   workspace?: string;
-  vault?: string;
   model?: string;
   systemPrompt?: string;
   appendSystemPrompt?: string;
@@ -36,11 +36,11 @@ export interface SpawnConfig {
   forkSession?: boolean;
 }
 
-export interface VaultSidecarConfig {
-  sessionId: string;
+export interface PersistentSidecarConfig {
   vaultName: string;
   image: string;
   network: string;
+  vaultsVolume: string;
   obsidianAuthToken: string;
   e2eePassword?: string;
 }
@@ -48,7 +48,7 @@ export interface VaultSidecarConfig {
 export class DockerManager {
   private docker: Docker;
   private containers = new Map<string, string>(); // sessionId -> containerId
-  private sidecars = new Map<string, string>(); // sessionId -> sidecar containerId
+  private persistentSidecars = new Map<string, string>(); // vaultName -> sidecar containerId
 
   constructor() {
     this.docker = new Docker({ socketPath: "/var/run/docker.sock" });
@@ -124,10 +124,11 @@ export class DockerManager {
     if (config.sessionsVolume) {
       binds.push(`${config.sessionsVolume}:/home/runner/.claude`);
     }
-    // Vault sessions mount the vault volume at /workspace (managed by sidecar)
-    if (config.vault) {
-      binds.push(`vault-${config.sessionId}:/workspace`);
-    } else if (config.workspace) {
+    // Mount shared vaults volume (ACL-gated per vault)
+    if (config.vaultsVolume) {
+      binds.push(`${config.vaultsVolume}:/vaults`);
+    }
+    if (config.workspace) {
       binds.push(`${config.workspace}:/workspace`);
     }
     if (config.additionalDirectories) {
@@ -170,74 +171,89 @@ export class DockerManager {
   }
 
   /**
-   * Spawn a vault sync sidecar container for the given session.
-   * Creates a named Docker volume and starts `ob sync --continuous` inside it.
+   * Spawn a persistent vault sync sidecar. Syncs into /vaults/<vaultName> on the shared volume.
+   * Persistent sidecars are keyed by vault name and not tied to any specific session.
    */
-  async spawnVaultSidecar(config: VaultSidecarConfig): Promise<string> {
-    const volumeName = `vault-${config.sessionId}`;
-    logger.info("orchestrator.docker", "spawning_vault_sidecar", {
-      session_id: config.sessionId,
+  async spawnPersistentSidecar(config: PersistentSidecarConfig): Promise<string> {
+    // Check if a sidecar for this vault is already running
+    if (this.persistentSidecars.has(config.vaultName)) {
+      const existingId = this.persistentSidecars.get(config.vaultName)!;
+      try {
+        const existing = this.docker.getContainer(existingId);
+        const info = await existing.inspect();
+        if (info?.State?.Running) {
+          logger.info("orchestrator.docker", "persistent_sidecar_already_running", {
+            vault_name: config.vaultName,
+            container_id: existingId,
+          });
+          return existingId;
+        }
+      } catch {
+        // Container gone or dead — proceed to spawn a new one
+      }
+      this.persistentSidecars.delete(config.vaultName);
+    }
+
+    logger.info("orchestrator.docker", "spawning_persistent_sidecar", {
       vault_name: config.vaultName,
-      volume: volumeName,
+      volume: config.vaultsVolume,
     });
 
-    // Ensure the named volume exists (createVolume is idempotent if name matches)
+    // Ensure the shared vaults volume exists
     try {
-      await this.docker.createVolume({ Name: volumeName });
+      await this.docker.createVolume({ Name: config.vaultsVolume });
     } catch (err: any) {
-      // Volume may already exist — that's fine (fast re-sync)
       if (!err.message?.includes("already exists")) throw err;
     }
 
+    const sidecarId = `vault-sidecar-${config.vaultName.replace(/[^a-zA-Z0-9_.-]/g, "_")}`;
     const container = await this.docker.createContainer({
+      name: sidecarId,
       Image: config.image,
       Env: [
         `OBSIDIAN_AUTH_TOKEN=${config.obsidianAuthToken}`,
         `VAULT_NAME=${config.vaultName}`,
         `VAULT_E2EE_PASSWORD=${config.e2eePassword || ""}`,
-        `SESSION_ID=${config.sessionId}`,
+        `SIDECAR_ID=${sidecarId}`,
       ],
-      Cmd: ["sh", "-c", [
-        `ob sync-setup --vault "$VAULT_NAME" --path /vault --password "$VAULT_E2EE_PASSWORD" --device-name "runner-${config.sessionId}"`,
-        "&&",
-        `ob sync --continuous --path /vault`,
-      ].join(" ")],
       HostConfig: {
-        Binds: [`${volumeName}:/vault`],
+        Binds: [`${config.vaultsVolume}:/vault`],
         NetworkMode: config.network,
+        RestartPolicy: { Name: "unless-stopped" },
       },
       Labels: {
         "claude-orchestrator": "true",
-        "session-id": config.sessionId,
         "role": "vault-sync",
+        "vault-name": config.vaultName,
       },
     });
 
     await container.start();
     const containerId = container.id;
-    this.sidecars.set(config.sessionId, containerId);
+    this.persistentSidecars.set(config.vaultName, containerId);
 
-    logger.info("orchestrator.docker", "vault_sidecar_started", {
-      session_id: config.sessionId,
+    logger.info("orchestrator.docker", "persistent_sidecar_started", {
+      vault_name: config.vaultName,
       container_id: containerId,
-      volume: volumeName,
+      volume: config.vaultsVolume,
     });
     return containerId;
   }
 
   /**
-   * Wait for the vault sidecar to complete initial sync.
+   * Wait for a persistent vault sidecar to complete initial sync.
    * Polls by exec'ing `ob sync-status` inside the sidecar container.
    */
-  async waitForVaultSync(sessionId: string, timeoutMs = 120_000): Promise<void> {
-    const containerId = this.sidecars.get(sessionId);
-    if (!containerId) throw new Error(`No vault sidecar for session ${sessionId}`);
+  async waitForVaultSync(vaultName: string, timeoutMs = 120_000): Promise<void> {
+    const containerId = this.persistentSidecars.get(vaultName);
+    if (!containerId) throw new Error(`No persistent sidecar for vault "${vaultName}"`);
 
+    const vaultPath = `/vault/${vaultName}`;
     const deadline = Date.now() + timeoutMs;
     const pollIntervalMs = 2_000;
 
     logger.info("orchestrator.docker", "waiting_for_vault_sync", {
-      session_id: sessionId,
+      vault_name: vaultName,
       timeout_ms: timeoutMs,
     });
 
@@ -245,7 +261,7 @@ export class DockerManager {
       try {
         const container = this.docker.getContainer(containerId);
         const exec = await container.exec({
-          Cmd: ["ob", "sync-status", "--path", "/vault"],
+          Cmd: ["ob", "sync-status", "--path", vaultPath],
           AttachStdout: true,
           AttachStderr: true,
         });
@@ -261,13 +277,13 @@ export class DockerManager {
 
         // "synced" or "up to date" in output means initial sync is done
         if (/synced|up.to.date/i.test(output)) {
-          logger.info("orchestrator.docker", "vault_sync_complete", { session_id: sessionId });
+          logger.info("orchestrator.docker", "vault_sync_complete", { vault_name: vaultName });
           return;
         }
       } catch (err: any) {
         // Container might not be ready yet or exec failed — keep polling
         logger.debug("orchestrator.docker", "vault_sync_poll_error", {
-          session_id: sessionId,
+          vault_name: vaultName,
           error: err?.message || String(err),
         });
       }
@@ -275,35 +291,34 @@ export class DockerManager {
       await new Promise((r) => setTimeout(r, pollIntervalMs));
     }
 
-    logger.warn("orchestrator.docker", "vault_sync_timeout", { session_id: sessionId, timeout_ms: timeoutMs });
-    throw new Error(`Vault sync timed out after ${timeoutMs}ms for session ${sessionId}`);
+    logger.warn("orchestrator.docker", "vault_sync_timeout", { vault_name: vaultName, timeout_ms: timeoutMs });
+    throw new Error(`Vault sync timed out after ${timeoutMs}ms for vault "${vaultName}"`);
   }
 
-  async killSidecar(sessionId: string): Promise<void> {
-    const containerId = this.sidecars.get(sessionId);
+  /** Stop and remove a persistent vault sidecar by vault name. */
+  async killPersistentSidecar(vaultName: string): Promise<void> {
+    const containerId = this.persistentSidecars.get(vaultName);
     if (!containerId) return;
 
-    logger.info("orchestrator.docker", "stopping_vault_sidecar", { session_id: sessionId, container_id: containerId });
+    logger.info("orchestrator.docker", "stopping_persistent_sidecar", { vault_name: vaultName, container_id: containerId });
     try {
       const container = this.docker.getContainer(containerId);
       await container.stop({ t: 5 });
       await container.remove({ force: true });
     } catch (err: any) {
       if (err.statusCode !== 304 && err.statusCode !== 404) {
-        logger.error("orchestrator.docker", "failed_to_stop_sidecar", {
-          session_id: sessionId,
+        logger.error("orchestrator.docker", "failed_to_stop_persistent_sidecar", {
+          vault_name: vaultName,
           container_id: containerId,
           error: err?.message || String(err),
         });
       }
     }
-    this.sidecars.delete(sessionId);
+    this.persistentSidecars.delete(vaultName);
   }
 
   async kill(sessionId: string): Promise<void> {
-    // Kill vault sidecar first (if any)
-    await this.killSidecar(sessionId);
-
+    // Note: persistent sidecars are NOT killed with sessions — they are vault-scoped
     const containerId = this.containers.get(sessionId);
     if (!containerId) {
       logger.debug("orchestrator.docker", "kill_requested_without_container", { session_id: sessionId });
@@ -339,46 +354,23 @@ export class DockerManager {
   async cleanup(): Promise<void> {
     logger.warn("orchestrator.docker", "cleanup_start", {
       session_count: this.containers.size,
-      sidecar_count: this.sidecars.size,
+      sidecar_count: this.persistentSidecars.size,
     });
     const promises = Array.from(this.containers.keys()).map((sessionId) => this.kill(sessionId));
     await Promise.allSettled(promises);
   }
 
-  /** Remove a vault volume. Use after session cleanup when volume retention is not desired. */
-  async removeVaultVolume(sessionId: string): Promise<void> {
-    const volumeName = `vault-${sessionId}`;
-    try {
-      const volume = this.docker.getVolume(volumeName);
-      await volume.remove();
-      logger.info("orchestrator.docker", "vault_volume_removed", { session_id: sessionId, volume: volumeName });
-    } catch (err: any) {
-      if (err.statusCode !== 404) {
-        logger.error("orchestrator.docker", "failed_to_remove_vault_volume", {
-          session_id: sessionId,
-          volume: volumeName,
-          error: err?.message || String(err),
-        });
-      }
-    }
+  /** Check if a persistent sidecar is running for a vault. */
+  hasPersistentSidecar(vaultName: string): boolean {
+    return this.persistentSidecars.has(vaultName);
   }
 
-  /** List all vault volumes managed by this orchestrator. */
-  async listVaultVolumes(): Promise<Array<{ name: string; sessionId: string; createdAt: string }>> {
-    const result = await this.docker.listVolumes({
-      filters: { name: ["vault-"] },
-    });
-    return (result.Volumes || [])
-      .filter((v) => v.Name.startsWith("vault-"))
-      .map((v) => ({
-        name: v.Name,
-        sessionId: v.Name.replace("vault-", ""),
-        createdAt: (v as any).CreatedAt || "",
-      }));
-  }
-
-  hasSidecar(sessionId: string): boolean {
-    return this.sidecars.has(sessionId);
+  /** List all persistent vault sidecars. */
+  listPersistentSidecars(): Array<{ vaultName: string; containerId: string }> {
+    return Array.from(this.persistentSidecars.entries()).map(([vaultName, containerId]) => ({
+      vaultName,
+      containerId,
+    }));
   }
 
   async ensureNetwork(name: string): Promise<void> {
@@ -391,10 +383,20 @@ export class DockerManager {
     }
   }
 
+  /** Ensure the shared vaults volume exists. */
+  async ensureVaultsVolume(volumeName: string): Promise<void> {
+    try {
+      await this.docker.createVolume({ Name: volumeName });
+    } catch (err: any) {
+      if (!err.message?.includes("already exists")) throw err;
+    }
+    logger.info("orchestrator.docker", "vaults_volume_ensured", { volume: volumeName });
+  }
+
   /**
    * Rebuild in-memory sessionId -> containerId mappings after orchestrator restart,
    * and report which persisted sessions still have a running container.
-   * Also recovers vault sidecar mappings by scanning running containers with role=vault-sync.
+   * Also recovers persistent vault sidecar mappings by scanning running containers with role=vault-sync.
    */
   async recoverFromSessions(sessions: Session[]): Promise<{
     running: string[];
@@ -406,19 +408,19 @@ export class DockerManager {
     const missing: string[] = [];
 
     this.containers.clear();
-    this.sidecars.clear();
+    this.persistentSidecars.clear();
     logger.info("orchestrator.docker", "recovering_sessions", { session_count: sessions.length });
 
-    // Recover vault sidecars by scanning running containers with our labels
+    // Recover persistent vault sidecars by scanning running containers with our labels
     try {
       const allContainers = await this.docker.listContainers({
         filters: { label: ["claude-orchestrator=true", "role=vault-sync"] },
       });
       for (const c of allContainers) {
-        const sid = c.Labels?.["session-id"];
-        if (sid) {
-          this.sidecars.set(sid, c.Id);
-          logger.debug("orchestrator.docker", "recovered_sidecar", { session_id: sid, container_id: c.Id });
+        const vaultName = c.Labels?.["vault-name"];
+        if (vaultName) {
+          this.persistentSidecars.set(vaultName, c.Id);
+          logger.debug("orchestrator.docker", "recovered_persistent_sidecar", { vault_name: vaultName, container_id: c.Id });
         }
       }
     } catch (err: any) {
@@ -454,7 +456,7 @@ export class DockerManager {
       running_count: running.length,
       not_running_count: notRunning.length,
       missing_count: missing.length,
-      sidecar_count: this.sidecars.size,
+      persistent_sidecar_count: this.persistentSidecars.size,
     });
     return { running, notRunning, missing };
   }

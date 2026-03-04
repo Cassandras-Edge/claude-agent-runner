@@ -33,6 +33,7 @@ const SESSIONS_VOLUME = process.env.SESSIONS_VOLUME || "claude-sessions";
 const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
 
 const WARM_POOL_SIZE = parseInt(process.env.WARM_POOL_SIZE || "0", 10);
+const VAULTS_VOLUME = process.env.VAULTS_VOLUME || "vaults-data";
 
 // --- Token pool ---
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -91,6 +92,7 @@ if (WARM_POOL_SIZE > 0) {
     orchestratorWsUrl: ORCHESTRATOR_WS_URL,
     network: NETWORK,
     sessionsVolume: SESSIONS_VOLUME,
+    vaultsVolume: VAULTS_VOLUME,
     env: runnerEnv,
   });
 
@@ -139,8 +141,9 @@ logger.info("orchestrator.bootstrap", "token pool state restored", {
   max_token_index: sessions.maxTokenIndex(),
 });
 
-// Ensure Docker network exists
+// Ensure Docker network and shared vaults volume exist
 await docker.ensureNetwork(NETWORK);
+await docker.ensureVaultsVolume(VAULTS_VOLUME);
 
 const app = createServer({
   sessions,
@@ -152,6 +155,7 @@ const app = createServer({
   runnerImage: RUNNER_IMAGE,
   network: NETWORK,
   sessionsVolume: SESSIONS_VOLUME,
+  vaultsVolume: VAULTS_VOLUME,
   sessionsPath: SESSIONS_PATH,
   wsPort: WS_PORT,
   orchestratorWsUrl: ORCHESTRATOR_WS_URL,
