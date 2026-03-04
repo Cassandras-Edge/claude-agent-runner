@@ -306,7 +306,7 @@ async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession> {
   }
 
   // Create new session
-  logger.info("runner.session", "creating_new_session");
+  logger.info("runner.session", "creating_new_session", { cwd: opts.cwd, model: opts.model });
   return unstable_v2_createSession(opts as any);
 }
 
@@ -1599,6 +1599,10 @@ function connect(): void {
           session = null;
         }
         sdkSessionId = undefined;
+
+        // Change process cwd so the SDK CLI subprocess inherits the correct working directory.
+        // The SDK passes opts.cwd to spawn(), but some code paths may use process.cwd() instead.
+        process.chdir(WORKSPACE);
 
         // Eagerly create SDK session so first message is instant
         session = await createOrResumeSession(ws);
