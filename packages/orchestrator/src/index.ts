@@ -82,6 +82,7 @@ const docker: ContainerManager = RUNNER_BACKEND === "k8s"
       cpuLimit: process.env.RUNNER_CPU_LIMIT,
       memoryRequest: process.env.RUNNER_MEMORY_REQUEST,
       memoryLimit: process.env.RUNNER_MEMORY_LIMIT,
+      imagePullPolicy: process.env.RUNNER_IMAGE_PULL_POLICY,
     })
   : new DockerManager();
 const bridge = new WsBridge(sessions, WS_PORT);
