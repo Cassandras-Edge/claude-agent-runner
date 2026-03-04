@@ -21,6 +21,33 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthInfo"
 
+  /vaults:
+    get:
+      operationId: listVaults
+      summary: List active vault sync volumes
+      responses:
+        "200":
+          description: Active vault syncs with volume and sidecar status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [vaults]
+                properties:
+                  vaults:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        session_id:
+                          type: string
+                        vault_name:
+                          type: string
+                        volume:
+                          type: string
+                        has_sidecar:
+                          type: boolean
+
   /sessions:
     get:
       operationId: listSessions
@@ -712,6 +739,29 @@ components:
         compactInstructions:
           type: string
           description: PreCompact hook instructions
+        permissionMode:
+          type: string
+          description: Permission mode (e.g. "bypassPermissions")
+        mcpServers:
+          type: object
+          description: MCP servers to inject into the session
+          additionalProperties:
+            type: object
+            properties:
+              command:
+                type: string
+              args:
+                type: array
+                items:
+                  type: string
+        allowedPaths:
+          type: array
+          items:
+            type: string
+          description: Restrict file operations to these paths
+        vault:
+          type: string
+          description: Obsidian vault name (spawns a vault sync sidecar)
 
     SendMessageRequest:
       type: object
@@ -808,6 +858,21 @@ components:
           type: string
         docker_connected:
           type: boolean
+        max_active_sessions:
+          type: integer
+          nullable: true
+        warm_pool:
+          type: object
+          nullable: true
+          properties:
+            target:
+              type: integer
+            total:
+              type: integer
+            ready:
+              type: integer
+            spawning:
+              type: integer
 
     ErrorResponse:
       type: object
