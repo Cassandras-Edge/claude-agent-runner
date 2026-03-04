@@ -4,7 +4,7 @@ import { readFile } from "fs/promises";
 import { existsSync } from "fs";
 import { join } from "path";
 import type { SessionManager } from "./sessions.js";
-import type { DockerManager } from "./docker.js";
+import type { ContainerManager } from "./docker.js";
 import type { WsBridge } from "./ws-bridge.js";
 import type {
   SessionRequest,
@@ -22,7 +22,7 @@ import { listSnapshots, getSnapshot } from "./db.js";
 
 interface AppContext {
   sessions: SessionManager;
-  docker: DockerManager;
+  docker: ContainerManager;
   bridge: WsBridge;
   tokenPool: TokenPool;
   db: Database.Database;

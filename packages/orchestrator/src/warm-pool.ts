@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import type { DockerManager } from "./docker.js";
+import type { ContainerManager } from "./docker.js";
 import type { WsBridge } from "./ws-bridge.js";
 import type { TokenPool } from "./token-pool.js";
 import { logger } from "./logger.js";
@@ -14,7 +14,7 @@ export interface WarmEntry {
 
 export interface WarmPoolConfig {
   targetSize: number;
-  docker: DockerManager;
+  docker: ContainerManager;
   bridge: WsBridge;
   tokenPool: TokenPool;
   runnerImage: string;

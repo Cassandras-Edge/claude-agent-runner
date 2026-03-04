@@ -2,7 +2,7 @@ import Docker from "dockerode";
 import type { Session } from "./types.js";
 import { logger } from "./logger.js";
 
-const FORWARDED_RUNNER_ENV_KEYS = new Set([
+export const FORWARDED_RUNNER_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
   "GIT_TOKEN",
   "GITHUB_TOKEN",
@@ -38,7 +38,24 @@ export interface SpawnConfig {
   forkSession?: boolean;
 }
 
-export class DockerManager {
+/** Backend-agnostic interface for container/pod lifecycle management. */
+export interface ContainerManager {
+  checkConnection(): Promise<boolean>;
+  spawn(config: SpawnConfig): Promise<string>;
+  kill(sessionId: string): Promise<void>;
+  cleanup(): Promise<void>;
+  recoverFromSessions(sessions: Session[]): Promise<{
+    running: string[];
+    notRunning: string[];
+    missing: string[];
+  }>;
+  rekeySession(oldId: string, newId: string): boolean;
+  getContainerId(sessionId: string): string | undefined;
+  /** Ensure networking prerequisites. No-op for k8s. */
+  ensureNetwork(name: string): Promise<void>;
+}
+
+export class DockerManager implements ContainerManager {
   private docker: Docker;
   private containers = new Map<string, string>(); // sessionId -> containerId
 

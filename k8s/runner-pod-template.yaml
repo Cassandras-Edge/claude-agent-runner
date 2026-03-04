@@ -1,0 +1,38 @@
+# Reference Pod spec for runner containers.
+# This file is NOT applied directly — K8sManager creates pods programmatically.
+# It documents the expected shape for debugging and reference.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: runner-SESSION_ID
+  namespace: claude-runner
+  labels:
+    claude-orchestrator: "true"
+    session-id: SESSION_ID
+    role: session # or "warm" for warm pool entries
+spec:
+  restartPolicy: Never
+  containers:
+    - name: runner
+      image: claude-runner:latest
+      env:
+        - name: RUNNER_SESSION_ID
+          value: SESSION_ID
+        - name: RUNNER_ORCHESTRATOR_URL
+          value: "ws://claude-orchestrator:8081"
+        - name: CLAUDE_CODE_OAUTH_TOKEN
+          value: "from-token-pool"
+      volumeMounts:
+        - name: sessions
+          mountPath: /home/runner/.claude
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "512Mi"
+        limits:
+          cpu: "2"
+          memory: "2Gi"
+  volumes:
+    - name: sessions
+      persistentVolumeClaim:
+        claimName: claude-sessions

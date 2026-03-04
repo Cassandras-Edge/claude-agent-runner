@@ -12,6 +12,7 @@
   "dependencies": {
     "@claude-agent-runner/shared": "*",
     "@hono/node-server": "^1.14.1",
+    "@kubernetes/client-node": "^1.4.0",
     "better-sqlite3": "^12.6.2",
     "dockerode": "^4.0.7",
     "dotenv": "^16.5.0",
