@@ -1554,6 +1554,43 @@ function connect(): void {
       if (cfg.allowedPaths !== undefined) ALLOWED_PATHS = cfg.allowedPaths || [];
 
       try {
+        // If vault is specified, grant ACL access and symlink /workspace
+        if (cfg.vault) {
+          const vaultPath = `/vaults/${cfg.vault}`;
+          logger.info("runner.ws", "vault_acl_grant", { session_id: SESSION_ID, vault: cfg.vault, path: vaultPath });
+
+          try {
+            // Grant runner user read/write/execute access via POSIX ACL
+            execSync(`setfacl -R -m u:runner:rwX ${JSON.stringify(vaultPath)}`, {
+              stdio: "pipe",
+              timeout: 30_000,
+            });
+            // Ensure new files in the vault also get ACL entries (default ACL)
+            execSync(`setfacl -R -d -m u:runner:rwX ${JSON.stringify(vaultPath)}`, {
+              stdio: "pipe",
+              timeout: 30_000,
+            });
+          } catch (aclErr) {
+            const msg = aclErr instanceof Error ? aclErr.message : String(aclErr);
+            logger.warn("runner.ws", "vault_acl_grant_failed", { session_id: SESSION_ID, vault: cfg.vault, error: msg });
+            // Continue anyway — the sidecar may set group permissions that work without ACL
+          }
+
+          // Symlink /workspace → /vaults/<vault-name>
+          try {
+            execSync(`rm -rf /workspace && ln -sfn ${JSON.stringify(vaultPath)} /workspace`, {
+              stdio: "pipe",
+              timeout: 5_000,
+            });
+          } catch (linkErr) {
+            const msg = linkErr instanceof Error ? linkErr.message : String(linkErr);
+            logger.error("runner.ws", "vault_symlink_failed", { session_id: SESSION_ID, vault: cfg.vault, error: msg });
+            throw new Error(`Failed to symlink workspace to vault: ${msg}`);
+          }
+
+          logger.info("runner.ws", "vault_workspace_ready", { session_id: SESSION_ID, vault: cfg.vault });
+        }
+
         // Clone repo if needed
         if (REPO) {
           ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "cloning" }));

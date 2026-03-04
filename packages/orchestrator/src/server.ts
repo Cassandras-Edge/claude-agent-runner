@@ -30,6 +30,7 @@ interface AppContext {
   runnerImage: string;
   network: string;
   sessionsVolume: string;
+  vaultsVolume: string;
   sessionsPath: string; // host-side mount path for reading transcripts
   wsPort: number;
   orchestratorWsUrl: string;
@@ -76,19 +77,66 @@ export function createServer(ctx: AppContext): Hono {
   // --- Vaults: List active vault syncs ---
 
   app.get("/vaults", async (c) => {
-    const volumes = await ctx.docker.listVaultVolumes();
-    const vaults = volumes.map((v) => {
-      const session = ctx.sessions.get(v.sessionId);
-      return {
-        volume: v.name,
-        session_id: v.sessionId,
-        vault_name: session?.vaultName,
-        session_status: session?.status,
-        sidecar_running: ctx.docker.hasSidecar(v.sessionId),
-        created_at: v.createdAt,
-      };
-    });
+    const sidecars = ctx.docker.listPersistentSidecars();
+    const vaults = sidecars.map((s) => ({
+      vault_name: s.vaultName,
+      sidecar_running: true,
+      container_id: s.containerId,
+      volume: ctx.vaultsVolume,
+    }));
     return c.json({ vaults });
+  });
+
+  // --- Vaults: Start persistent sidecar ---
+
+  app.post("/vaults/sync", async (c) => {
+    let body: { vault: string };
+    try {
+      body = (await c.req.json()) as { vault: string };
+    } catch {
+      return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
+    }
+    if (!body.vault) {
+      return c.json({ code: "invalid_request", message: "Field vault is required" } satisfies ErrorResponse, 400 as any);
+    }
+
+    const obsidianAuthToken = ctx.env.OBSIDIAN_AUTH_TOKEN;
+    if (!obsidianAuthToken) {
+      return c.json({ code: "invalid_request", message: "OBSIDIAN_AUTH_TOKEN is required for vault sync" } satisfies ErrorResponse, 400 as any);
+    }
+
+    try {
+      const containerId = await ctx.docker.spawnPersistentSidecar({
+        vaultName: body.vault,
+        image: ctx.env.VAULT_SYNC_IMAGE || "vault-sync:latest",
+        network: ctx.network,
+        vaultsVolume: ctx.vaultsVolume,
+        obsidianAuthToken,
+        e2eePassword: ctx.env.OBSIDIAN_E2EE_PASSWORD,
+      });
+
+      // Wait for initial sync
+      await ctx.docker.waitForVaultSync(body.vault);
+
+      logger.info("orchestrator.api", "vault_sync_started", { vault_name: body.vault, container_id: containerId });
+      return c.json({ vault_name: body.vault, container_id: containerId, status: "synced" });
+    } catch (err: any) {
+      logger.error("orchestrator.api", "vault_sync_failed", { vault_name: body.vault, error: err?.message || String(err) });
+      return c.json({ code: "internal", message: err?.message || "Vault sync failed" } satisfies ErrorResponse, 500 as any);
+    }
+  });
+
+  // --- Vaults: Stop persistent sidecar ---
+
+  app.delete("/vaults/:name", async (c) => {
+    const vaultName = decodeURIComponent(c.req.param("name"));
+    if (!ctx.docker.hasPersistentSidecar(vaultName)) {
+      return c.json({ code: "session_not_found", message: `No sidecar running for vault "${vaultName}"` } satisfies ErrorResponse, 404 as any);
+    }
+
+    await ctx.docker.killPersistentSidecar(vaultName);
+    logger.info("orchestrator.api", "vault_sidecar_stopped", { vault_name: vaultName });
+    return c.json({ vault_name: vaultName, status: "stopped" });
   });
 
   // --- Sessions: List ---
@@ -529,17 +577,13 @@ export function createServer(ctx: AppContext): Hono {
     await ctx.docker.kill(session.id);
     ctx.sessions.updateStatus(session.id, "stopped");
 
-    // Optionally clean up vault volume (default: keep for fast re-sync)
-    const cleanupVolume = c.req.query("cleanup_volume") === "true";
-    if (session.vaultName && cleanupVolume) {
-      await ctx.docker.removeVaultVolume(session.id);
-    }
+    // Note: vault data lives on the shared vaults volume, not a per-session volume.
+    // Use DELETE /vaults/:name to stop the persistent sidecar if needed.
 
     const result = {
       session_id: session.id,
       status: "stopped" as const,
       total_usage: session.totalUsage,
-      vault_volume_removed: session.vaultName ? cleanupVolume : undefined,
     };
 
     ctx.sessions.remove(session.id);
@@ -828,8 +872,9 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
     request_id: requestId,
   });
 
-  // Try warm pool adoption (only for sessions without workspace/additionalDirectories/vault bind mounts)
-  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length && !body.vault;
+  // Try warm pool adoption (only for sessions without workspace/additionalDirectories bind mounts).
+  // Vault sessions CAN use warm pool since all warm containers mount the shared vaults volume.
+  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length;
   if (canUseWarmPool) {
     const warmEntry = ctx.warmPool!.adopt();
     if (warmEntry) {
@@ -842,6 +887,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
         repo: body.repo,
         branch: body.branch,
         gitToken: ctx.env.GIT_TOKEN || ctx.env.GITHUB_TOKEN,
+        vault: body.vault,
         model,
         systemPrompt: body.systemPrompt,
         appendSystemPrompt: body.appendSystemPrompt,
@@ -865,6 +911,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
         repo: body.repo,
         branch: body.branch,
         workspace: body.workspace,
+        vaultName: body.vault,
         model,
         systemPrompt: body.systemPrompt,
         maxTurns,
@@ -886,21 +933,22 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
   let containerId: string | undefined;
 
   try {
-    // If vault source is requested, spawn vault sync sidecar and wait for initial sync
+    // If vault source is requested, ensure a persistent sidecar is syncing this vault
     if (body.vault) {
       const obsidianAuthToken = ctx.env.OBSIDIAN_AUTH_TOKEN;
       if (!obsidianAuthToken) {
         throw new Error("OBSIDIAN_AUTH_TOKEN is required for vault sessions");
       }
-      await ctx.docker.spawnVaultSidecar({
-        sessionId,
+      // Spawn persistent sidecar if not already running (idempotent)
+      await ctx.docker.spawnPersistentSidecar({
         vaultName: body.vault,
         image: ctx.env.VAULT_SYNC_IMAGE || "vault-sync:latest",
         network: ctx.network,
+        vaultsVolume: ctx.vaultsVolume,
         obsidianAuthToken,
         e2eePassword: ctx.env.OBSIDIAN_E2EE_PASSWORD,
       });
-      await ctx.docker.waitForVaultSync(sessionId);
+      await ctx.docker.waitForVaultSync(body.vault);
     }
 
     containerId = await ctx.docker.spawn({
@@ -910,10 +958,10 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       env: sessionEnv,
       network: ctx.network,
       sessionsVolume: ctx.sessionsVolume,
+      vaultsVolume: ctx.vaultsVolume,
       repo: body.repo,
       branch: body.branch,
       workspace: body.workspace,
-      vault: body.vault,
       model,
       systemPrompt: body.systemPrompt,
       appendSystemPrompt: body.appendSystemPrompt,
@@ -947,8 +995,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       session_id: sessionId,
       error: err instanceof Error ? err.message : String(err),
     });
-    // Clean up sidecar if vault session failed
-    await ctx.docker.killSidecar(sessionId).catch(() => undefined);
+    // Note: persistent sidecars are not cleaned up here — they are vault-scoped, not session-scoped
     if (containerId) {
       await ctx.docker.kill(sessionId).catch(() => undefined);
     }
