@@ -3,7 +3,7 @@ name: CLI Version Check
 # Check for new Claude Code releases and attempt patch compatibility
 on:
   schedule:
-    - cron: "0 */6 * * *" # every 6 hours
+    - cron: "0 9 * * *" # daily at 9am UTC
   workflow_dispatch: # manual trigger
 
 permissions:
