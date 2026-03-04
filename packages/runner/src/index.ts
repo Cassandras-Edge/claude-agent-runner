@@ -25,31 +25,31 @@ import { MemIpcClient } from "./mem-ipc.js";
 
 // --- Config from env ---
 
-const SESSION_ID = process.env.RUNNER_SESSION_ID || randomUUID();
+let SESSION_ID = process.env.RUNNER_SESSION_ID || randomUUID();
 const ORCHESTRATOR_URL = process.env.RUNNER_ORCHESTRATOR_URL;
-const REPO = process.env.RUNNER_REPO;
-const BRANCH = process.env.RUNNER_BRANCH || "main";
-const GIT_TOKEN = process.env.RUNNER_GIT_TOKEN;
-const MODEL = process.env.RUNNER_MODEL || "sonnet";
-const SYSTEM_PROMPT = process.env.RUNNER_SYSTEM_PROMPT;
-const APPEND_SYSTEM_PROMPT = process.env.RUNNER_APPEND_SYSTEM_PROMPT;
-const MAX_TURNS = process.env.RUNNER_MAX_TURNS ? parseInt(process.env.RUNNER_MAX_TURNS, 10) : undefined;
-const THINKING = process.env.RUNNER_THINKING === "true";
-const ALLOWED_TOOLS: string[] = process.env.RUNNER_ALLOWED_TOOLS
+let REPO = process.env.RUNNER_REPO;
+let BRANCH = process.env.RUNNER_BRANCH || "main";
+let GIT_TOKEN = process.env.RUNNER_GIT_TOKEN;
+let MODEL = process.env.RUNNER_MODEL || "sonnet";
+let SYSTEM_PROMPT = process.env.RUNNER_SYSTEM_PROMPT;
+let APPEND_SYSTEM_PROMPT = process.env.RUNNER_APPEND_SYSTEM_PROMPT;
+let MAX_TURNS: number | undefined = process.env.RUNNER_MAX_TURNS ? parseInt(process.env.RUNNER_MAX_TURNS, 10) : undefined;
+let THINKING = process.env.RUNNER_THINKING === "true";
+let ALLOWED_TOOLS: string[] = process.env.RUNNER_ALLOWED_TOOLS
   ? JSON.parse(process.env.RUNNER_ALLOWED_TOOLS)
   : [];
-const DISALLOWED_TOOLS: string[] = process.env.RUNNER_DISALLOWED_TOOLS
+let DISALLOWED_TOOLS: string[] = process.env.RUNNER_DISALLOWED_TOOLS
   ? JSON.parse(process.env.RUNNER_DISALLOWED_TOOLS)
   : [];
 const ADDITIONAL_DIRECTORIES: string[] = process.env.RUNNER_ADDITIONAL_DIRECTORIES
   ? JSON.parse(process.env.RUNNER_ADDITIONAL_DIRECTORIES)
   : [];
-const COMPACT_INSTRUCTIONS = process.env.RUNNER_COMPACT_INSTRUCTIONS;
-const PERMISSION_MODE = process.env.RUNNER_PERMISSION_MODE || "bypassPermissions";
-const MCP_SERVERS: Record<string, { command: string; args?: string[] }> = process.env.RUNNER_MCP_SERVERS
+let COMPACT_INSTRUCTIONS = process.env.RUNNER_COMPACT_INSTRUCTIONS;
+let PERMISSION_MODE = process.env.RUNNER_PERMISSION_MODE || "bypassPermissions";
+let MCP_SERVERS: Record<string, { command: string; args?: string[] }> = process.env.RUNNER_MCP_SERVERS
   ? JSON.parse(process.env.RUNNER_MCP_SERVERS)
   : {};
-const ALLOWED_PATHS: string[] = process.env.RUNNER_ALLOWED_PATHS
+let ALLOWED_PATHS: string[] = process.env.RUNNER_ALLOWED_PATHS
   ? JSON.parse(process.env.RUNNER_ALLOWED_PATHS)
   : [];
 const FORK_FROM = process.env.RUNNER_FORK_FROM;
@@ -1516,6 +1516,63 @@ function connect(): void {
             trace_id: traceId,
           }));
         }
+      }
+      return;
+    }
+
+    if (msg.type === "adopt") {
+      const adoptMsg = msg as any;
+      logger.info("runner.ws", "adopt_received", {
+        old_session_id: SESSION_ID,
+        new_session_id: adoptMsg.session_id,
+        has_repo: !!adoptMsg.config?.repo,
+        model: adoptMsg.config?.model,
+      });
+
+      // Update identity
+      SESSION_ID = adoptMsg.session_id;
+      process.env.CLAUDE_CODE_OAUTH_TOKEN = adoptMsg.oauth_token;
+
+      // Update session config from adopt payload
+      const cfg = adoptMsg.config || {};
+      if (cfg.repo !== undefined) REPO = cfg.repo;
+      if (cfg.branch !== undefined) BRANCH = cfg.branch || "main";
+      if (cfg.gitToken !== undefined) {
+        GIT_TOKEN = cfg.gitToken;
+        if (cfg.gitToken) process.env.RUNNER_GIT_TOKEN = cfg.gitToken;
+      }
+      if (cfg.model !== undefined) MODEL = cfg.model || "sonnet";
+      if (cfg.systemPrompt !== undefined) SYSTEM_PROMPT = cfg.systemPrompt;
+      if (cfg.appendSystemPrompt !== undefined) APPEND_SYSTEM_PROMPT = cfg.appendSystemPrompt;
+      if (cfg.maxTurns !== undefined) MAX_TURNS = cfg.maxTurns;
+      if (cfg.thinking !== undefined) THINKING = !!cfg.thinking;
+      if (cfg.allowedTools !== undefined) ALLOWED_TOOLS = cfg.allowedTools || [];
+      if (cfg.disallowedTools !== undefined) DISALLOWED_TOOLS = cfg.disallowedTools || [];
+      if (cfg.compactInstructions !== undefined) COMPACT_INSTRUCTIONS = cfg.compactInstructions;
+      if (cfg.permissionMode !== undefined) PERMISSION_MODE = cfg.permissionMode || "bypassPermissions";
+      if (cfg.mcpServers !== undefined) MCP_SERVERS = cfg.mcpServers || {};
+      if (cfg.allowedPaths !== undefined) ALLOWED_PATHS = cfg.allowedPaths || [];
+
+      try {
+        // Clone repo if needed
+        if (REPO) {
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "cloning" }));
+          cloneRepo();
+        }
+
+        if (!existsSync(WORKSPACE)) {
+          mkdirSync(WORKSPACE, { recursive: true });
+        }
+
+        // Eagerly create SDK session so first message is instant
+        session = await createOrResumeSession(ws);
+        logger.info("runner.ws", "adopt_session_created", { session_id: SESSION_ID });
+
+        ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready" }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error("runner.ws", "adopt_failed", { session_id: SESSION_ID, error: message });
+        ws.send(JSON.stringify({ type: "error", session_id: SESSION_ID, code: "adopt_failed", message }));
       }
       return;
     }

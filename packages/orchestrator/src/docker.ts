@@ -459,6 +459,16 @@ export class DockerManager {
     return { running, notRunning, missing };
   }
 
+  /** Rekey a container mapping from one session ID to another (used by warm pool adoption). */
+  rekeySession(oldId: string, newId: string): boolean {
+    const containerId = this.containers.get(oldId);
+    if (!containerId) return false;
+    this.containers.delete(oldId);
+    this.containers.set(newId, containerId);
+    logger.info("orchestrator.docker", "rekey_session", { old_id: oldId, new_id: newId, container_id: containerId });
+    return true;
+  }
+
   getContainerId(sessionId: string): string | undefined {
     return this.containers.get(sessionId);
   }
