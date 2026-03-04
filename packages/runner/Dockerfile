@@ -44,8 +44,9 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.63 && npm cache clean --force
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
 
-# Pin runner user to UID/GID 1000 so POSIX ACLs on shared vault volume work correctly
-RUN addgroup -g 1000 -S runner && adduser -u 1000 -S runner -G runner
+# Create runner user in the node group (GID 1000).
+# GID 1000 matches the vaults group in the vault-sync sidecar for shared volume permissions.
+RUN adduser -S runner -G node
 WORKDIR /app
 
 # Install production deps only
@@ -62,14 +63,14 @@ COPY --from=builder /app/packages/runner/dist packages/runner/dist
 COPY --from=patcher /patches/dist/cli-patched.js /opt/claude/cli-patched.js
 
 # Workspace directory where repos get cloned or dirs get mounted
-RUN mkdir -p /workspace && chown runner:runner /workspace
+RUN mkdir -p /workspace && chown runner:node /workspace
 
 # Vaults mount point (shared volume, ACL-gated per vault)
 RUN mkdir -p /vaults
 
 # Claude Code expects these directories/files to exist
 RUN mkdir -p /home/runner/.claude/debug /home/runner/.claude/plugins && \
-    chown -R runner:runner /home/runner/.claude
+    chown -R runner:node /home/runner/.claude
 RUN mkdir -p /etc/claude-code && echo '{}' > /etc/claude-code/managed-settings.json
 
 # Set patched CLI path for the runner

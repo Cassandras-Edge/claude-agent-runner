@@ -20,8 +20,7 @@ export class WsBridge extends EventEmitter {
     this.wss = new WebSocketServer({ port });
 
     this.wss.on("connection", (_ws: WebSocket, _req: IncomingMessage) => {
-      let sessionId: string | undefined;
-      const ws = _ws;
+      const ws = _ws as WebSocket & { _sessionId?: string };
 
       ws.on("message", (data: Buffer) => {
         let msg: RunnerMessage;
@@ -32,13 +31,15 @@ export class WsBridge extends EventEmitter {
           return;
         }
 
-        if (!sessionId && msg.session_id) {
-          sessionId = msg.session_id;
-          this.connections.set(sessionId, ws);
-          this.sessions.setWs(sessionId, ws);
-          logger.info("orchestrator.ws_bridge", "runner_connected", { session_id: sessionId });
+        if (!ws._sessionId && msg.session_id) {
+          ws._sessionId = msg.session_id;
+          this.connections.set(ws._sessionId, ws);
+          this.sessions.setWs(ws._sessionId, ws);
+          logger.info("orchestrator.ws_bridge", "runner_connected", { session_id: ws._sessionId });
         }
 
+        // After adopt, the runner sends the new session ID — use it
+        const sessionId = msg.session_id || ws._sessionId;
         if (!sessionId) return;
 
         switch (msg.type) {
@@ -169,15 +170,16 @@ export class WsBridge extends EventEmitter {
       });
 
       ws.on("close", () => {
-        if (sessionId) {
-          logger.info("orchestrator.ws_bridge", "runner_disconnected", { session_id: sessionId });
-          this.connections.delete(sessionId);
-          const session = this.sessions.get(sessionId);
+        const sid = ws._sessionId;
+        if (sid) {
+          logger.info("orchestrator.ws_bridge", "runner_disconnected", { session_id: sid });
+          this.connections.delete(sid);
+          const session = this.sessions.get(sid);
           if (session) {
-            this.sessions.clearRuntime(sessionId);
+            this.sessions.clearRuntime(sid);
             if (!this.shuttingDown && session.status !== "stopped" && session.status !== "error") {
-              this.sessions.updateStatus(sessionId, "stopped");
-              this.emit(`status:${sessionId}`, "stopped");
+              this.sessions.updateStatus(sid, "stopped");
+              this.emit(`status:${sid}`, "stopped");
             }
           }
         }
@@ -185,7 +187,7 @@ export class WsBridge extends EventEmitter {
 
       ws.on("error", (err: Error) => {
         logger.error("orchestrator.ws_bridge", "runner_ws_error", {
-          session_id: sessionId,
+          session_id: ws._sessionId,
           error: err.message,
         });
       });
@@ -480,10 +482,11 @@ export class WsBridge extends EventEmitter {
 
   /** Rekey a connection from one session ID to another (used by warm pool adoption). */
   rekeyConnection(oldId: string, newId: string): boolean {
-    const ws = this.connections.get(oldId);
+    const ws = this.connections.get(oldId) as (WebSocket & { _sessionId?: string }) | undefined;
     if (!ws) return false;
     this.connections.delete(oldId);
     this.connections.set(newId, ws);
+    ws._sessionId = newId;
     this.sessions.setWs(newId, ws);
     logger.info("orchestrator.ws_bridge", "rekey_connection", { old_id: oldId, new_id: newId });
     return true;
