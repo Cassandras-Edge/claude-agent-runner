@@ -1,6 +1,8 @@
 # Claude Agent Runner
 
-Multi-session Claude Code agent orchestrator. Run concurrent, Docker-isolated Claude agent sessions through a REST + WebSocket API with streaming events, live context surgery, fork-and-steer interrupts, dynamic model switching, permission control, and custom MCP servers.
+Multi-session Claude Code agent orchestrator. Run concurrent, isolated Claude agent sessions through a REST + WebSocket API with streaming events, live context surgery, fork-and-steer interrupts, dynamic model switching, permission control, and custom MCP servers.
+
+Deploys on **Docker** (single host) or **Kubernetes** (k3s/k8s) with multi-tenant isolation, Cloudflare Tunnel ingress, and full observability via VictoriaMetrics + VictoriaLogs + Grafana.
 
 Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a patched CLI for background MCP tools, live IPC, session commands, and custom compaction prompts.
 
@@ -10,7 +12,9 @@ Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/s
 
 | Feature | Stock Claude Code | Agent Runner |
 |---------|-------------------|--------------|
-| **Multi-session** | Single CLI process | Concurrent isolated Docker sessions via API |
+| **Multi-session** | Single CLI process | Concurrent isolated sessions via API |
+| **Multi-tenant** | N/A | API key auth, per-tenant namespaces, isolated data |
+| **k8s deployment** | N/A | k3s/k8s with auto-scaling, RBAC, PVCs |
 | **Fork-and-steer** | Wait or abort | Interrupt without losing work — background finishes, foreground handles new message |
 | **Live context surgery** | None | Read, inject, remove, truncate, rewind conversation context at runtime via IPC |
 | **Background MCP tools** | Sequential | All MCP tool calls run with `run_in_background`, parallel execution via task registry |
@@ -18,45 +22,47 @@ Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/s
 | **Custom compaction** | Fixed prompt | Inject or fully replace the compact summary prompt per session |
 | **Dynamic model switching** | Set at start | Change model, thinking tokens, or compact instructions mid-session |
 | **Permission protocol** | Terminal prompt | Programmatic allow/deny/modify via WebSocket |
+| **Observability** | None | Prometheus metrics, structured log aggregation, Grafana dashboards |
 | **Slash commands in SDK mode** | Not available | `/clear` and `/resume` work in stream-json mode |
 | **Rewind** | Not available | Truncate context to any previous turn by UUID |
 | **Auto-compaction** | Manual | Orchestrator monitors context % and compacts when idle |
 | **MCP server injection** | Config files | Pass MCP servers per session at creation time |
 | **Path restrictions** | Config files | Per-session `allowedPaths` enforced via PreToolUse hook |
-| **Vault sync** | Not available | Obsidian vault sessions via headless sidecar — live sync to `/workspace` |
+| **Vault sync** | Not available | Obsidian vault sessions via headless sync — live bidirectional to `/workspace` |
 | **Warm pool** | Not available | Pre-spawned containers for near-instant session creation |
+| **Cloudflare Tunnel** | N/A | Zero-config external access via sidecar |
 
 ## Architecture
 
 ```
-Client (REST / SSE / WebSocket)
-    │
-    ▼
-┌──────────────────────────────────┐
-│  Orchestrator                    │
-│  Hono HTTP API       :8080 REST  │
-│  Client WebSocket    :8080 /ws   │
-│  Runner WS bridge    :8081       │
-│  SQLite session persistence      │
-│  OAuth token pool (round-robin)  │
-│  Auto-compactor                  │
-│  Warm pool (optional)            │
-└────────────┬─────────────────────┘
-             │ Docker API + WS
-             ▼
-┌──────────────────────────────────┐
-│  Runner containers (ephemeral)   │
-│  Claude Agent SDK (V2)           │
-│  Patched CLI binary              │
-│  Git clone + /workspace mount    │
-│  IPC socket for live context     │
-│  Isolated per session            │
-└──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  k3s cluster                                                     │
+│                                                                   │
+│  ┌───────────────────────────────┐  ┌──────────────────────────┐│
+│  │ orchestrator (Deployment)     │  │ runner pods              ││
+│  │  Hono API            :8080    │  │  warm-pool-xxx (idle)    ││
+│  │  Client WS      :8080/ws     │  │  session-abc (busy)      ││
+│  │  Runner WS bridge    :8081    │  │  session-def (ready)     ││
+│  │  SQLite on PVC                │  │  [per-tenant namespace]  ││
+│  │  Token pool (round-robin)     │  └──────────────────────────┘│
+│  │  Metrics       /metrics       │                               │
+│  │  cloudflared (optional)       │  ┌──────────────────────────┐│
+│  └───────────────────────────────┘  │ monitoring namespace     ││
+│                                      │  VictoriaMetrics         ││
+│  Backends: Docker API or k8s API     │  VictoriaLogs            ││
+│  Auth: X-API-Key per tenant          │  Vector (log collector)  ││
+│                                      │  Grafana :3000           ││
+│                                      └──────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-The **orchestrator** manages session lifecycle, spawns Docker containers, and proxies agent events to clients via both REST (SSE) and WebSocket. Each **runner** is a short-lived container running a patched Claude CLI via the Agent SDK against a cloned repo or mounted workspace.
+**Docker mode:** Orchestrator uses Docker socket API directly. Single host, simplest setup.
+
+**k8s mode:** Orchestrator uses Kubernetes API via `@kubernetes/client-node`. Multi-node, auto-scheduling, namespace isolation per tenant. Set `RUNNER_BACKEND=k8s`.
 
 ## Quick Start
+
+### Docker (simple)
 
 ```bash
 git clone https://github.com/DigiBugCat/claude-agent-runner.git
@@ -72,11 +78,53 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-The API is available at `http://localhost:9080`.
+API at `http://localhost:9080`.
+
+### Kubernetes (k3d local)
+
+See [k8s quickstart](k8s/docs/quickstart.md) for the full walkthrough. TL;DR:
+
+```bash
+k3d cluster create claude-runner
+docker build -t claude-orchestrator:latest -f packages/orchestrator/Dockerfile .
+docker build -t claude-runner:latest -f packages/runner/Dockerfile .
+k3d image import claude-orchestrator:latest claude-runner:latest -c claude-runner
+kubectl apply -k k8s/
+```
+
+## Multi-Tenancy
+
+Tenants are project-scoped isolation units — an agent, a user, a team, or a workload. Each tenant gets:
+- API key authentication (`X-API-Key` header)
+- Isolated k8s namespace (auto-provisioned)
+- Separate sessions PVC and secrets
+- Soft session capacity limit
+- Per-tenant Obsidian vault configuration
+
+Tenants share the global OAuth token pool and cluster resources.
+
+```bash
+# Enable tenants
+ENABLE_TENANTS=true ADMIN_API_KEY=your-secret
+
+# Create a tenant (admin)
+curl -X POST localhost:9080/tenants \
+  -H 'X-API-Key: your-secret' \
+  -H 'Content-Type: application/json' \
+  -d '{"id": "my-project", "name": "My Project", "max_sessions": 5}'
+# Returns: { "api_key": "..." } — save this, shown once
+
+# Use tenant key for all operations
+curl -X POST localhost:9080/sessions \
+  -H 'X-API-Key: <tenant-api-key>' \
+  -d '{"message": "hello"}'
+```
+
+Tenant API routes: `GET/POST/PATCH/DELETE /tenants`, `POST /tenants/:id/rotate-key`
 
 ## WebSocket API
 
-Connect to `ws://localhost:9080/ws` for real-time bidirectional communication with sessions.
+Connect to `ws://localhost:9080/ws` (or `ws://host/ws?key=<api-key>` with tenants enabled).
 
 ### Client → Server Frames
 
@@ -86,11 +134,11 @@ Connect to `ws://localhost:9080/ws` for real-time bidirectional communication wi
 | `subscribe` | `session_id` | Subscribe to all events for a session |
 | `unsubscribe` | `session_id` | Stop receiving events |
 | `send` | `session_id`, `message`, `content?`, `model?`, `max_turns?`, `max_thinking_tokens?` | Send a message to an idle session. Supports multimodal `content` blocks. |
-| `steer` | `session_id`, `message`, `mode?`, `model?`, `compact?`, `operations?` | Interrupt or redirect. `mode: "steer"` aborts current turn; `mode: "fork_and_steer"` keeps background running. Also works on idle sessions. |
+| `steer` | `session_id`, `message`, `mode?`, `model?`, `compact?`, `operations?` | Interrupt or redirect. `mode: "steer"` aborts current turn; `mode: "fork_and_steer"` keeps background running. |
 | `compact` | `session_id`, `custom_instructions?` | Force context compaction |
 | `rewind` | `session_id`, `user_message_uuid` | Truncate context to the turn before the given UUID |
-| `set_options` | `session_id`, `model?`, `max_thinking_tokens?`, `compact_instructions?` | Change model or settings mid-session (takes effect next turn) |
-| `permission_response` | `session_id`, `tool_use_id`, `behavior` | Respond to a pending tool permission request (`allow`/`deny`/`allowWithModification`) |
+| `set_options` | `session_id`, `model?`, `max_thinking_tokens?`, `compact_instructions?` | Change model or settings mid-session |
+| `permission_response` | `session_id`, `tool_use_id`, `behavior` | Respond to a pending tool permission request |
 | `get_commands` | `session_id` | List available slash commands |
 
 ### Server → Client Frames
@@ -107,45 +155,6 @@ Connect to `ws://localhost:9080/ws` for real-time bidirectional communication wi
 | `commands_result` | `session_id`, `commands[]` | Available slash commands |
 | `error` | `session_id`, `error_code`, `message` | Runner error |
 
-### Multimodal Content
-
-The `send` and `steer` frames accept an optional `content` array for multimodal messages:
-
-```json
-{
-  "type": "send",
-  "session_id": "abc",
-  "content": [
-    { "type": "text", "text": "What's in this image?" },
-    { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "..." } }
-  ]
-}
-```
-
-### Permission Protocol
-
-When `permissionMode` is not `bypassPermissions`, tool calls require client approval:
-
-1. Server sends `permission_request` with `tool_name`, `tool_use_id`, and `input`
-2. Client sends `permission_response` with `behavior`:
-   - `allow` — proceed with the tool call
-   - `deny` — block it (optional `message` for reason)
-   - `allowWithModification` — proceed with `updated_input`
-
-### Fork-and-Steer via WebSocket
-
-```json
-// Interrupt a busy agent without losing its work
-{
-  "type": "steer",
-  "session_id": "abc",
-  "message": "Quick question while you work on that",
-  "mode": "fork_and_steer"
-}
-```
-
-The original session finishes in the background. A new forked session handles the message in the foreground. When the background completes, its result is merged back into the foreground context via IPC.
-
 ## REST API
 
 Full OpenAPI 3.1 spec: [`openapi.yaml`](openapi.yaml)
@@ -156,27 +165,11 @@ Full OpenAPI 3.1 spec: [`openapi.yaml`](openapi.yaml)
 |--------|------|-------------|
 | `POST` | `/sessions` | Create session (blocking) |
 | `POST` | `/sessions/stream` | Create session (SSE streaming) |
-| `GET` | `/sessions` | List all sessions |
+| `GET` | `/sessions` | List sessions (scoped to tenant) |
 | `GET` | `/sessions/:id` | Get session detail |
 | `PATCH` | `/sessions/:id` | Rename or pin session |
 | `DELETE` | `/sessions/:id` | Stop and remove session |
 | `GET` | `/sessions/:id/transcript` | Get JSONL transcript |
-
-### Vaults (Obsidian Sync)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/vaults` | List active vault sync volumes and sidecar status |
-
-Create a vault-backed session by passing `vault` instead of `repo`/`workspace`:
-
-```bash
-curl -X POST http://localhost:9080/sessions \
-  -H "Content-Type: application/json" \
-  -d '{"vault": "My Vault", "message": "Summarize my notes on project X"}'
-```
-
-Requires `OBSIDIAN_AUTH_TOKEN` and a built `vault-sync` image (see Configuration).
 
 ### Messages
 
@@ -188,8 +181,6 @@ Requires `OBSIDIAN_AUTH_TOKEN` and a built `vault-sync` image (see Configuration
 
 ### Context Surgery
 
-Live manipulation of the agent's conversation context via IPC to the running CLI process.
-
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/sessions/:id/context` | Read conversation context |
@@ -197,78 +188,62 @@ Live manipulation of the agent's conversation context via IPC to the running CLI
 | `DELETE` | `/sessions/:id/context/messages/:uuid` | Remove message by UUID |
 | `POST` | `/sessions/:id/context/truncate` | Truncate to last N turns |
 | `POST` | `/sessions/:id/context/compact` | Schedule compaction |
-
-### Steer and Fork-and-Steer
-
-Interrupt a running agent without losing work.
-
-| Method | Path | Description |
-|--------|------|-------------|
 | `POST` | `/sessions/:id/context/steer` | Steer or fork-and-steer |
 
-```bash
-# Steer: abort current turn and redirect
-curl -X POST http://localhost:9080/sessions/<id>/context/steer \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Stop, do this instead", "mode": "steer"}'
-
-# Fork-and-steer: keep background running, answer in foreground
-curl -X POST http://localhost:9080/sessions/<id>/context/steer \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Quick question while you work", "mode": "fork_and_steer"}'
-```
-
-### Snapshots
+### Tenants
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/sessions/:id/snapshots` | List context snapshots |
-| `GET` | `/sessions/:id/snapshots/:snapId` | Get snapshot with messages |
-| `POST` | `/sessions/:id/snapshots` | Trigger manual snapshot |
+| `GET` | `/tenants` | List tenants (admin) or self-info (tenant key) |
+| `POST` | `/tenants` | Create tenant (admin) |
+| `GET` | `/tenants/:id` | Get tenant detail |
+| `PATCH` | `/tenants/:id` | Update tenant config (admin) |
+| `DELETE` | `/tenants/:id` | Delete tenant (admin) |
+| `POST` | `/tenants/:id/rotate-key` | Rotate API key (admin) |
 
-Snapshots are automatically created on steer, compaction, and turn completion.
-
-### Health
+### Observability
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Service health, active sessions, token pool, Docker status |
+| `GET` | `/health` | Service health, active sessions, token pool, backend status |
+| `GET` | `/metrics` | Prometheus-compatible metrics (VictoriaMetrics scrapes this) |
 
-### Examples
+## Observability
+
+The orchestrator exposes 16+ Prometheus-compatible metrics with high-cardinality labels (`model`, `tenant_id`, `source_type`), optimized for VictoriaMetrics.
+
+### Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `sessions_created_total` | Counter | Sessions created (by model, source, tenant) |
+| `sessions_active` | Gauge | Active sessions by status |
+| `tokens_consumed_total` | Counter | Input/output tokens consumed |
+| `cost_usd_total` | Counter | Estimated cost in USD |
+| `spawn_duration_seconds` | Histogram | Time to spawn + ready a runner |
+| `message_duration_seconds` | Histogram | Message round-trip time |
+| `warm_pool_hits_total` | Counter | Sessions adopted from warm pool |
+| `warm_pool_misses_total` | Counter | Cold spawns (no warm entry) |
+| `api_requests_total` | Counter | HTTP requests by method/path/status |
+| `api_request_duration_seconds` | Histogram | HTTP request latency |
+| `ws_connections_active` | Gauge | Active WebSocket connections |
+| `runner_errors_total` | Counter | Runner errors by code |
+
+### Monitoring Stack
+
+Deploy VictoriaMetrics + VictoriaLogs + Vector + Grafana:
 
 ```bash
-# Create a session with MCP servers and path restrictions
-curl -X POST http://localhost:9080/sessions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "repo": "https://github.com/user/repo",
-    "message": "Add input validation to the login endpoint",
-    "model": "sonnet",
-    "mcpServers": {
-      "my-server": { "command": "npx", "args": ["-y", "my-mcp-server"] }
-    },
-    "allowedPaths": ["/workspace/src"],
-    "permissionMode": "bypassPermissions"
-  }'
-
-# Stream a session with SSE
-curl -N -X POST http://localhost:9080/sessions/stream \
-  -H "Content-Type: application/json" \
-  -d '{
-    "repo": "https://github.com/user/repo",
-    "message": "Refactor the database module to use connection pooling"
-  }'
-
-# Send a follow-up
-curl -X POST http://localhost:9080/sessions/<id>/messages \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Now add tests for the changes you made"}'
-
-# Inject context (e.g., add a system hint)
-curl -X POST http://localhost:9080/sessions/<id>/context/inject \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Remember to use the existing test helpers", "role": "user"}'
+kubectl apply -k k8s/monitoring/
+kubectl -n monitoring port-forward svc/grafana 3000:3000
+# Open http://localhost:3000 (admin/admin)
 ```
+
+Pre-configured Grafana datasources:
+- **VictoriaMetrics** — PromQL queries on scraped metrics
+- **VictoriaLogs** — LogsQL queries on structured JSON logs (all orchestrator/runner output)
+
+Vector DaemonSet automatically collects pod stdout, parses JSON fields, and pushes to VictoriaLogs.
 
 ## Configuration
 
@@ -277,103 +252,98 @@ All configuration via environment variables. See [`.env.example`](.env.example).
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | Yes | OAuth token(s), comma-separated for round-robin |
+| `RUNNER_BACKEND` | No | `docker` (default) or `k8s` |
+| `RUNNER_IMAGE` | No | Runner image (default: `claude-runner:latest`) |
+| `RUNNER_IMAGE_PULL_POLICY` | No | k8s image pull policy (set `Never` for local k3d) |
+| `K8S_NAMESPACE` | No | Default k8s namespace (default: `claude-runner`) |
+| `ENABLE_TENANTS` | No | Enable multi-tenancy (`true`/`false`) |
+| `ADMIN_API_KEY` | No | Admin key for `/tenants` management routes |
 | `GIT_TOKEN` | No | GitHub token for cloning private repos |
-| `RUNNER_IMAGE` | No | Docker image for runners (default: `claude-runner:latest`) |
 | `IDLE_TIMEOUT_MS` | No | Idle session timeout in ms (default: `300000`) |
 | `MESSAGE_TIMEOUT_MS` | No | Message timeout in ms (default: `600000`) |
-| `MAX_ACTIVE_SESSIONS` | No | Max concurrent sessions (default: `8`) |
+| `MAX_ACTIVE_SESSIONS` | No | Max concurrent sessions (default: unlimited) |
 | `DB_PATH` | No | SQLite database path (default: `/app/data/orchestrator.db`) |
 | `AUTO_COMPACT_THRESHOLD_PCT` | No | Context % threshold for auto-compaction |
 | `AUTO_COMPACT_IDLE_SECONDS` | No | Seconds idle before auto-compact fires |
-| `WARM_POOL_SIZE` | No | Number of pre-spawned warm containers (default: `0` = disabled) |
+| `WARM_POOL_SIZE` | No | Pre-spawned warm containers (default: `0` = disabled) |
+| `RUNNER_CPU_REQUEST` | No | CPU request per runner pod (k8s only, e.g. `500m`) |
+| `RUNNER_CPU_LIMIT` | No | CPU limit per runner pod (k8s only, e.g. `2`) |
+| `RUNNER_MEMORY_REQUEST` | No | Memory request per runner pod (k8s only, e.g. `512Mi`) |
+| `RUNNER_MEMORY_LIMIT` | No | Memory limit per runner pod (k8s only, e.g. `2Gi`) |
 | `OBSIDIAN_AUTH_TOKEN` | No | Obsidian sync token (required for vault sessions) |
-| `OBSIDIAN_E2EE_PASSWORD` | No | Obsidian E2E encryption password (if vault is encrypted) |
-| `VAULT_SYNC_IMAGE` | No | Docker image for vault sidecar (default: `vault-sync:latest`) |
+| `OBSIDIAN_E2EE_PASSWORD` | No | Obsidian E2E encryption password |
+
+## Cloudflare Tunnel
+
+Expose the orchestrator externally without opening ports. See [Cloudflare Tunnel setup guide](k8s/docs/cloudflare-tunnel.md).
+
+The cloudflared sidecar is included in the orchestrator deployment (commented out by default). Create a tunnel, add the token as a k8s secret, uncomment the sidecar, and apply.
 
 ## CLI Patches
 
 The runner uses a patched version of Claude Code's CLI. The patching system uses a step-based engine that locates code by content anchors (not minified names), making patches resilient across CLI versions.
 
-### Patch Engine
-
-Specs live in `packages/runner/patches/patches/<name>/spec.json` and use ordered `steps` arrays. The engine (`lib/engine.js`) supports these step types:
-
-| Step Type | Description |
-|-----------|-------------|
-| `extract` | Locate minified symbols by regex within a global or anchored region |
-| `find_replace` | Literal or regex find-and-replace with optional byte-length padding |
-| `insert_after` / `insert_before` | Inject template code after/before a matched location |
-| `find_function` | Locate a function by content anchor (not by name) |
-| `replace_in_function` | Replace code within a function found by `find_function` |
-| `wrap_function` | Wrap a found function with additional logic |
-
 ### Active Patches
 
 | Patch | Description |
 |-------|-------------|
-| **`mcp-background`** | Adds `run_in_background: true` to all MCP tool calls using the CLI's internal task registry. Enables parallel MCP tool execution. |
-| **`memory-ipc`** | Starts a Unix socket IPC server exposing `mutableMessages` for live context surgery — supports `get_messages`, `push`, `splice`, `emit`, and `session_id` commands. |
-| **`clear-resume`** | Enables `/clear` and `/resume <id>` slash commands in stream-json (SDK) mode, which are normally only available in interactive terminal mode. |
-| **`no-sibling-abort`** | Removes the sibling tool call abort logic so parallel tool calls succeed or fail independently rather than aborting all siblings when one errors. |
-| **`compact-instructions`** | Injects custom compaction prompts from `RUNNER_COMPACT_INSTRUCTIONS` env var. Prefix with `replace:` to fully replace the default prompt, or omit to append as additional instructions. |
-
-### Disabled Patches
-
-| Patch | Description |
-|-------|-------------|
-| **`webfetch-skip-haiku`** | Would skip Haiku summarization in WebFetch and return raw markdown. Disabled. |
-
-### Applying Patches
-
-```bash
-cd packages/runner/patches
-
-# Dry-run against a snapshot
-bun run scripts/patch-all.js --binary snapshots/cli-2.1.63.js --js-only --dry-run
-
-# Apply (produces dist/cli-patched.js)
-bun run scripts/patch-all.js --binary snapshots/cli-2.1.63.js --js-only
-
-# Against system-installed binary
-bun run scripts/patch-all.js --js-only
-```
+| **`mcp-background`** | `run_in_background: true` for all MCP tool calls |
+| **`memory-ipc`** | Unix socket IPC server for live context surgery |
+| **`clear-resume`** | `/clear` and `/resume` in SDK stream-json mode |
+| **`no-sibling-abort`** | Parallel tool calls complete independently |
+| **`compact-instructions`** | Custom compaction prompts via env var |
 
 ### After Claude Code Updates
 
-1. Download the new CLI JS: `npm pack @anthropic-ai/claude-code@<version>`, extract `cli.js`, copy to `snapshots/cli-<version>.js`
+1. Download new CLI: `npm pack @anthropic-ai/claude-code@<version>`, extract `cli.js` to `snapshots/`
 2. Dry-run: `bun run scripts/patch-all.js --binary snapshots/cli-<version>.js --js-only --dry-run`
-3. If all patches pass: update the Dockerfile's pinned version, rebuild images
-4. If a patch is skipped: update its extractors in `spec.json` (the anchor or regex patterns changed)
+3. If patches pass: update Dockerfile's pinned version, rebuild
+4. If a patch fails: update extractors in `spec.json`
 
 ## Project Structure
 
 ```
 packages/
 ├── shared/            # Shared TypeScript types (API + WS protocol)
-├── orchestrator/      # HTTP API + WS + session management + Docker orchestration
+├── orchestrator/      # HTTP API + WS + session management
 │   └── src/
-│       ├── server.ts        # Hono route definitions
-│       ├── sessions.ts      # SessionManager (SQLite-backed)
-│       ├── docker.ts        # DockerManager (Dockerode)
+│       ├── server.ts        # Hono routes + tenant CRUD
+│       ├── sessions.ts      # SessionManager (SQLite, tenant-scoped)
+│       ├── docker.ts        # DockerManager + ContainerManager interface
+│       ├── k8s-manager.ts   # K8sManager (pod CRUD via k8s API)
+│       ├── k8s-provisioner.ts # Auto-provisions tenant namespaces/PVCs/secrets
+│       ├── tenants.ts       # TenantManager (CRUD, API key auth)
+│       ├── auth.ts          # Auth middleware (HTTP + WS)
+│       ├── metrics.ts       # Prometheus metrics (prom-client)
 │       ├── ws-bridge.ts     # Internal WS bridge to runners (:8081)
 │       ├── client-ws.ts     # Client-facing WS API (:8080/ws)
-│       ├── auto-compact.ts  # AutoCompactor (context % monitoring)
-│       ├── warm-pool.ts     # WarmPool (pre-spawned container pool)
+│       ├── auto-compact.ts  # AutoCompactor
+│       ├── warm-pool.ts     # WarmPool (works with both backends)
 │       ├── token-pool.ts    # OAuth token round-robin
-│       └── db.ts            # SQLite schema + snapshots
-└── runner/            # Claude Agent SDK wrapper (runs inside Docker)
-    ├── src/
-    │   ├── index.ts              # Main runner loop + permission protocol
-    │   ├── background-drainer.ts # Drains background session to completion
-    │   ├── merge-back.ts         # Splices background result into foreground via IPC
-    │   ├── mem-ipc.ts            # IPC client for CLI's Unix socket
-    │   ├── context.ts            # JSONL context operations (fallback)
-    │   └── serialize.ts          # SDK event serialization (incl. usage)
+│       └── db.ts            # SQLite schema (sessions + tenants + snapshots)
+└── runner/            # Claude Agent SDK wrapper (runs inside Docker/k8s)
+    ├── src/           # Runner loop, fork-and-steer, IPC, serialization
     └── patches/       # CLI binary patching system
-        ├── lib/                  # Step-based patch engine + diagnostics
-        ├── scripts/              # patch-all.js entry point
-        ├── patches/              # Individual patch specs + templates
-        └── snapshots/            # CLI binary snapshots (gitignored)
+
+k8s/
+├── namespace.yaml              # claude-runner namespace
+├── secrets.yaml                # OAuth tokens, Obsidian auth, git tokens
+├── pvc-sessions.yaml           # Sessions PVC (RWO single-node, RWX multi-node)
+├── pvc-orchestrator.yaml       # SQLite PVC
+├── orchestrator-rbac.yaml      # ClusterRole for cross-namespace management
+├── orchestrator-deployment.yaml # Orchestrator + optional cloudflared sidecar
+├── orchestrator-service.yaml   # ClusterIP service (8080 + 8081)
+├── runner-pod-template.yaml    # Reference spec (K8sManager creates pods programmatically)
+├── kustomization.yaml
+├── docs/
+│   ├── quickstart.md           # Local k3d setup guide
+│   └── cloudflare-tunnel.md    # Cloudflare Tunnel setup guide
+└── monitoring/
+    ├── victoria-metrics.yaml   # Metrics storage + scraping
+    ├── victoria-logs.yaml      # Log storage (JSON-native)
+    ├── vector.yaml             # Log collection DaemonSet
+    ├── grafana.yaml            # Dashboards (pre-configured datasources)
+    └── kustomization.yaml
 ```
 
 ## Development
@@ -381,7 +351,7 @@ packages/
 ```bash
 npm install
 npm run typecheck    # Type check all packages
-npm test             # Unit tests (vitest)
+npm test             # Unit tests (vitest) — 195 tests
 npm run dev --workspace=packages/orchestrator  # Dev mode
 ```
 
@@ -394,10 +364,15 @@ docker compose build --no-cache
 # Or build individually
 docker build -f packages/orchestrator/Dockerfile -t claude-orchestrator .
 docker build -f packages/runner/Dockerfile -t claude-runner .
-
-# Build vault sync sidecar (only needed for vault sessions)
-docker compose --profile build-only build vault-sync
 ```
+
+## CI/CD
+
+GitHub Actions workflow (`.github/workflows/docker.yml`):
+- **Test:** typecheck + vitest on every push/PR
+- **Validate manifests:** `kubectl kustomize` dry-run on k8s/ and k8s/monitoring/
+- **Build:** Docker images pushed to GHCR on main/tags (orchestrator + runner)
+- **Image tags:** `:latest`, `main-<sha>`, semver on tags
 
 ## License
 
