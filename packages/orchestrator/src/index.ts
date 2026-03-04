@@ -259,4 +259,4 @@ const httpServer = serve({ fetch: app.fetch, port: PORT }, (info) => {
 });
 
 // Attach client-facing WebSocket on /ws path (same HTTP port)
-const clientWss = attachClientWs(httpServer, { bridge, sessions });
+const clientWss = attachClientWs(httpServer, { bridge, sessions, tenants });

@@ -4,11 +4,11 @@ metadata:
   name: claude-orchestrator
   namespace: claude-runner
 ---
+# ClusterRole (not namespaced Role) — orchestrator manages pods across tenant namespaces
 apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
+kind: ClusterRole
 metadata:
   name: claude-orchestrator
-  namespace: claude-runner
 rules:
   - apiGroups: [""]
     resources: ["pods"]
@@ -16,15 +16,24 @@ rules:
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get"]
+  # For K8sProvisioner: create/delete namespaces, PVCs, secrets
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "patch", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
+kind: ClusterRoleBinding
 metadata:
   name: claude-orchestrator
-  namespace: claude-runner
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: Role
+  kind: ClusterRole
   name: claude-orchestrator
 subjects:
   - kind: ServiceAccount

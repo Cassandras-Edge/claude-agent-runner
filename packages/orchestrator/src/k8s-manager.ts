@@ -27,6 +27,7 @@ export class K8sManager implements ContainerManager {
   private coreApi: k8s.CoreV1Api;
   private namespace: string;
   private pods = new Map<string, string>(); // sessionId -> podName
+  private podNamespaces = new Map<string, string>(); // sessionId -> namespace
   private config: K8sManagerConfig;
 
   constructor(config: K8sManagerConfig = {}) {
@@ -57,6 +58,9 @@ export class K8sManager implements ContainerManager {
     if (!forwardedEnv.CLAUDE_CODE_OAUTH_TOKEN) {
       throw new Error("CLAUDE_CODE_OAUTH_TOKEN missing from runner environment");
     }
+
+    // Use tenant namespace if provided, otherwise default
+    const targetNamespace = config.namespace || this.namespace;
 
     // Sanitize session ID for k8s naming (must be lowercase, alphanumeric + hyphens)
     const podName = `runner-${config.sessionId}`.toLowerCase().replace(/[^a-z0-9-]/g, "-").slice(0, 63);
@@ -132,7 +136,7 @@ export class K8sManager implements ContainerManager {
     const podSpec: k8s.V1Pod = {
       metadata: {
         name: podName,
-        namespace: this.namespace,
+        namespace: targetNamespace,
         labels: {
           [LABEL_MANAGED]: "true",
           [LABEL_SESSION_ID]: config.sessionId,
@@ -165,11 +169,12 @@ export class K8sManager implements ContainerManager {
 
     try {
       const result = await this.coreApi.createNamespacedPod({
-        namespace: this.namespace,
+        namespace: targetNamespace,
         body: podSpec,
       });
       const createdPodName = result.metadata?.name || podName;
       this.pods.set(config.sessionId, createdPodName);
+      this.podNamespaces.set(config.sessionId, targetNamespace);
 
       logger.info("orchestrator.k8s", "pod_created", {
         session_id: config.sessionId,
@@ -193,11 +198,12 @@ export class K8sManager implements ContainerManager {
       return;
     }
 
-    logger.warn("orchestrator.k8s", "deleting_pod", { session_id: sessionId, pod_name: podName });
+    const ns = this.podNamespaces.get(sessionId) || this.namespace;
+    logger.warn("orchestrator.k8s", "deleting_pod", { session_id: sessionId, pod_name: podName, namespace: ns });
     try {
       await this.coreApi.deleteNamespacedPod({
         name: podName,
-        namespace: this.namespace,
+        namespace: ns,
         gracePeriodSeconds: 5,
       });
       logger.info("orchestrator.k8s", "pod_deleted", {
@@ -217,6 +223,7 @@ export class K8sManager implements ContainerManager {
     }
 
     this.pods.delete(sessionId);
+    this.podNamespaces.delete(sessionId);
   }
 
   async cleanup(): Promise<void> {
@@ -242,20 +249,33 @@ export class K8sManager implements ContainerManager {
     const missing: string[] = [];
 
     this.pods.clear();
+    this.podNamespaces.clear();
     logger.info("orchestrator.k8s", "recovering_sessions", { session_count: sessions.length });
 
-    // List all managed pods in one call
+    // In multi-tenant mode, pods may be in different namespaces.
+    // We use listPodForAllNamespaces with label selector to find all managed pods.
     let managedPods: k8s.V1Pod[] = [];
     try {
-      const podList = await this.coreApi.listNamespacedPod({
-        namespace: this.namespace,
+      const podList = await this.coreApi.listPodForAllNamespaces({
         labelSelector: `${LABEL_MANAGED}=true`,
       });
       managedPods = podList.items || [];
     } catch (err) {
-      logger.error("orchestrator.k8s", "failed_to_list_pods", {
+      // Fallback to default namespace only
+      logger.warn("orchestrator.k8s", "failed_to_list_all_namespaces_falling_back", {
         error: err instanceof Error ? err.message : String(err),
       });
+      try {
+        const podList = await this.coreApi.listNamespacedPod({
+          namespace: this.namespace,
+          labelSelector: `${LABEL_MANAGED}=true`,
+        });
+        managedPods = podList.items || [];
+      } catch (err2) {
+        logger.error("orchestrator.k8s", "failed_to_list_pods", {
+          error: err2 instanceof Error ? err2.message : String(err2),
+        });
+      }
     }
 
     // Build a map of sessionId -> pod for quick lookup
@@ -273,9 +293,11 @@ export class K8sManager implements ContainerManager {
       }
 
       const podName = pod.metadata?.name;
+      const podNs = pod.metadata?.namespace || this.namespace;
       const phase = pod.status?.phase;
       if (phase === "Running" && podName) {
         this.pods.set(session.id, podName);
+        this.podNamespaces.set(session.id, podNs);
         running.push(session.id);
       } else {
         notRunning.push(session.id);
@@ -293,11 +315,14 @@ export class K8sManager implements ContainerManager {
   rekeySession(oldId: string, newId: string): boolean {
     const podName = this.pods.get(oldId);
     if (!podName) return false;
+    const ns = this.podNamespaces.get(oldId) || this.namespace;
     this.pods.delete(oldId);
+    this.podNamespaces.delete(oldId);
     this.pods.set(newId, podName);
+    this.podNamespaces.set(newId, ns);
 
     // Also patch the pod label asynchronously
-    this.patchPodLabel(podName, newId).catch((err) => {
+    this.patchPodLabel(podName, newId, ns).catch((err) => {
       logger.error("orchestrator.k8s", "rekey_label_patch_failed", {
         old_id: oldId,
         new_id: newId,
@@ -314,10 +339,10 @@ export class K8sManager implements ContainerManager {
     return this.pods.get(sessionId);
   }
 
-  private async patchPodLabel(podName: string, newSessionId: string): Promise<void> {
+  private async patchPodLabel(podName: string, newSessionId: string, namespace?: string): Promise<void> {
     await this.coreApi.patchNamespacedPod({
       name: podName,
-      namespace: this.namespace,
+      namespace: namespace || this.namespace,
       body: {
         metadata: {
           labels: {
