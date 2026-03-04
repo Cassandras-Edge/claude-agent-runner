@@ -50,7 +50,9 @@ function loadSpec(id) {
 
 // ── Tests ────────────────────────────────────────────────────────────────
 
-describe("Patch Engine — output verification against cli-2.1.63", () => {
+const snapshotExists = existsSync(SNAPSHOT);
+
+describe.skipIf(!snapshotExists)("Patch Engine — output verification against cli-2.1.63", () => {
   let originalJS;
 
   beforeAll(() => {
