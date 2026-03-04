@@ -12,6 +12,7 @@ import { openDb } from "./db.js";
 import { attachClientWs } from "./client-ws.js";
 import { AutoCompactor } from "./auto-compact.js";
 import { WarmPool } from "./warm-pool.js";
+import { TenantManager } from "./tenants.js";
 import { logger } from "./logger.js";
 
 // --- Config ---
@@ -36,6 +37,8 @@ const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
 
 const WARM_POOL_SIZE = parseInt(process.env.WARM_POOL_SIZE || "0", 10);
 const RUNNER_BACKEND = (process.env.RUNNER_BACKEND || "docker") as "docker" | "k8s";
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+const ENABLE_TENANTS = process.env.ENABLE_TENANTS === "true";
 
 // --- Token pool ---
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -71,6 +74,7 @@ logger.info("orchestrator.storage", "opened sqlite database", { path: DB_PATH })
 // --- Initialize ---
 
 const sessions = new SessionManager(db);
+const tenants = ENABLE_TENANTS ? new TenantManager(db) : undefined;
 const docker: ContainerManager = RUNNER_BACKEND === "k8s"
   ? new K8sManager({
       sessionsPvcName: SESSIONS_VOLUME,
@@ -170,6 +174,8 @@ const app = createServer({
   maxActiveSessions: MAX_ACTIVE_SESSIONS,
   startedAt: new Date(),
   warmPool,
+  tenants,
+  adminApiKey: ADMIN_API_KEY,
 });
 
 // Fill warm pool after network is ready

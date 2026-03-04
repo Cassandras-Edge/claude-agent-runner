@@ -27,6 +27,22 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 `;
 
+const TENANTS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS tenants (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  api_key_hash TEXT NOT NULL UNIQUE,
+  namespace TEXT NOT NULL UNIQUE,
+  max_sessions INTEGER NOT NULL DEFAULT 10,
+  vault TEXT,
+  obsidian_auth_token TEXT,
+  obsidian_e2ee_password TEXT,
+  git_token TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`;
+
 const SNAPSHOTS_SCHEMA = `
 CREATE TABLE IF NOT EXISTS context_snapshots (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -51,6 +67,20 @@ export interface SnapshotRow {
   roles: string | null;
   messages: string;
   created_at: string;
+}
+
+export interface TenantRow {
+  id: string;
+  name: string;
+  api_key_hash: string;
+  namespace: string;
+  max_sessions: number;
+  vault: string | null;
+  obsidian_auth_token: string | null;
+  obsidian_e2ee_password: string | null;
+  git_token: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface SessionRow {
@@ -79,6 +109,7 @@ export interface SessionRow {
   compact_count: number;
   last_compact_at: string | null;
   vault_name: string | null;
+  tenant_id: string | null;
 }
 
 // Idempotent migrations for columns added after initial schema
@@ -89,6 +120,8 @@ const MIGRATIONS = [
   "ALTER TABLE sessions ADD COLUMN compact_count INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE sessions ADD COLUMN last_compact_at TEXT",
   "ALTER TABLE sessions ADD COLUMN vault_name TEXT",
+  "ALTER TABLE sessions ADD COLUMN tenant_id TEXT REFERENCES tenants(id)",
+  "CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)",
 ];
 
 function runMigrations(db: Database.Database): void {
@@ -106,6 +139,7 @@ export function openDb(path: string): Database.Database {
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  db.exec(TENANTS_SCHEMA);
   db.exec(SNAPSHOTS_SCHEMA);
   runMigrations(db);
   return db;
@@ -183,5 +217,6 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     compactCount: row.compact_count ?? 0,
     lastCompactAt: row.last_compact_at ? new Date(row.last_compact_at) : undefined,
     vaultName: row.vault_name ?? undefined,
+    tenantId: row.tenant_id ?? undefined,
   };
 }

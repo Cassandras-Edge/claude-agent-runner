@@ -16,6 +16,8 @@ import type {
   Usage,
 } from "./types.js";
 import type { TokenPool } from "./token-pool.js";
+import type { TenantManager, Tenant } from "./tenants.js";
+import { createAuthMiddleware } from "./auth.js";
 import { getLogContext, logger, runWithLogContext } from "./logger.js";
 import type Database from "better-sqlite3";
 import { listSnapshots, getSnapshot } from "./db.js";
@@ -37,6 +39,8 @@ interface AppContext {
   maxActiveSessions?: number;
   startedAt: Date;
   warmPool?: import("./warm-pool.js").WarmPool;
+  tenants?: TenantManager;
+  adminApiKey?: string;
 }
 
 export function createServer(ctx: AppContext): Hono {
@@ -52,6 +56,24 @@ export function createServer(ctx: AppContext): Hono {
       await next();
     });
   });
+
+  // --- Auth middleware (when tenants are configured) ---
+  if (ctx.tenants) {
+    app.use("*", createAuthMiddleware(ctx.tenants, ctx.adminApiKey));
+  }
+
+  // Helper: get the current tenant (undefined when auth is disabled)
+  function getTenant(c: import("hono").Context): Tenant | undefined {
+    if (!ctx.tenants) return undefined;
+    try { return c.get("tenant"); } catch { return undefined; }
+  }
+
+  // Helper: check if a session belongs to the requesting tenant
+  function checkOwnership(c: import("hono").Context, session: { tenantId?: string }): boolean {
+    const tenant = getTenant(c);
+    if (!tenant) return true; // no auth = allow all
+    return session.tenantId === tenant.id;
+  }
 
   // --- Health ---
 
@@ -76,7 +98,8 @@ export function createServer(ctx: AppContext): Hono {
   // --- Sessions: List ---
 
   app.get("/sessions", (c) => {
-    const sessions = ctx.sessions.list().map((s) => ({
+    const tenant = getTenant(c);
+    const sessions = ctx.sessions.list(tenant?.id).map((s) => ({
       session_id: s.id,
       name: s.name,
       pinned: s.pinned,
@@ -595,6 +618,7 @@ export function createServer(ctx: AppContext): Hono {
         systemPrompt: body.systemPrompt || parent.systemPrompt,
         maxTurns: body.maxTurns ?? parent.maxTurns,
         forkedFrom: parent.id,
+        tenantId: parent.tenantId,
       });
 
       logger.info("orchestrator.api", "fork_session_created", {
@@ -649,7 +673,8 @@ export function createServer(ctx: AppContext): Hono {
 
   app.post("/sessions", async (c) => {
     const requestId = c.req.header("x-request-id") || randomUUID();
-    const body = await parseSessionRequest(c, ctx.sessions);
+    const tenant = getTenant(c);
+    const body = await parseSessionRequest(c, ctx.sessions, tenant?.id);
     if ("error" in body) {
       logger.warn("orchestrator.api", "invalid_create_session_request", { error: body.error });
       return c.json(body.error, body.status);
@@ -667,7 +692,7 @@ export function createServer(ctx: AppContext): Hono {
 
     try {
       await ensureCapacity(ctx);
-      await spawnSession(ctx, sessionId, body, requestId);
+      await spawnSession(ctx, sessionId, body, requestId, tenant?.id);
       await waitForReady(ctx, sessionId, undefined, requestId);
       startupComplete = true;
       logger.info("orchestrator.api", "session_ready", { session_id: sessionId, request_id: requestId });
@@ -763,12 +788,145 @@ export function createServer(ctx: AppContext): Hono {
     }
   });
 
+  // --- Tenants CRUD (admin-only when auth is enabled) ---
+
+  if (ctx.tenants) {
+    const tenantMgr = ctx.tenants;
+
+    app.get("/tenants", (c) => {
+      // Admin sees all tenants; non-admin tenant sees only self
+      const tenant = getTenant(c);
+      if (tenant) {
+        return c.json({ tenants: [{ id: tenant.id, name: tenant.name, namespace: tenant.namespace, max_sessions: tenant.maxSessions, created_at: tenant.createdAt.toISOString() }] });
+      }
+      const all = tenantMgr.list().map((t) => ({
+        id: t.id,
+        name: t.name,
+        namespace: t.namespace,
+        max_sessions: t.maxSessions,
+        created_at: t.createdAt.toISOString(),
+        updated_at: t.updatedAt.toISOString(),
+      }));
+      return c.json({ tenants: all });
+    });
+
+    app.get("/tenants/:id", (c) => {
+      const tenant = getTenant(c);
+      const id = c.req.param("id");
+      if (tenant && tenant.id !== id) {
+        return c.json({ code: "session_not_found", message: "Tenant not found" } satisfies ErrorResponse, 404 as any);
+      }
+      const t = tenantMgr.get(id);
+      if (!t) return c.json({ code: "session_not_found", message: "Tenant not found" } satisfies ErrorResponse, 404 as any);
+      return c.json({
+        id: t.id,
+        name: t.name,
+        namespace: t.namespace,
+        max_sessions: t.maxSessions,
+        vault: t.vault,
+        has_obsidian_auth: !!t.obsidianAuthToken,
+        has_git_token: !!t.gitToken,
+        created_at: t.createdAt.toISOString(),
+        updated_at: t.updatedAt.toISOString(),
+      });
+    });
+
+    app.post("/tenants", async (c) => {
+      // Admin only (enforced by auth middleware — non-admin tenant gets 401)
+      const tenant = getTenant(c);
+      if (tenant) {
+        return c.json({ code: "invalid_request", message: "Only admin can create tenants" } satisfies ErrorResponse, 403 as any);
+      }
+
+      let body: any;
+      try { body = await c.req.json(); } catch {
+        return c.json({ code: "invalid_request", message: "Invalid JSON" } satisfies ErrorResponse, 400 as any);
+      }
+
+      if (!body.id || !body.name) {
+        return c.json({ code: "invalid_request", message: "Fields id and name are required" } satisfies ErrorResponse, 400 as any);
+      }
+
+      try {
+        const { tenant: created, apiKey } = tenantMgr.create({
+          id: body.id,
+          name: body.name,
+          namespace: body.namespace,
+          maxSessions: body.max_sessions,
+          vault: body.vault,
+          obsidianAuthToken: body.obsidian_auth_token,
+          obsidianE2eePassword: body.obsidian_e2ee_password,
+          gitToken: body.git_token,
+        });
+
+        return c.json({
+          id: created.id,
+          name: created.name,
+          namespace: created.namespace,
+          api_key: apiKey, // shown once
+          max_sessions: created.maxSessions,
+        }, 201 as any);
+      } catch (err: any) {
+        if (err?.message?.includes("UNIQUE constraint")) {
+          return c.json({ code: "invalid_request", message: "Tenant ID or namespace already exists" } satisfies ErrorResponse, 409 as any);
+        }
+        throw err;
+      }
+    });
+
+    app.patch("/tenants/:id", async (c) => {
+      const tenant = getTenant(c);
+      if (tenant) {
+        return c.json({ code: "invalid_request", message: "Only admin can update tenants" } satisfies ErrorResponse, 403 as any);
+      }
+
+      let body: any;
+      try { body = await c.req.json(); } catch {
+        return c.json({ code: "invalid_request", message: "Invalid JSON" } satisfies ErrorResponse, 400 as any);
+      }
+
+      const updated = tenantMgr.update(c.req.param("id"), {
+        name: body.name,
+        maxSessions: body.max_sessions,
+        vault: body.vault,
+        obsidianAuthToken: body.obsidian_auth_token,
+        obsidianE2eePassword: body.obsidian_e2ee_password,
+        gitToken: body.git_token,
+      });
+
+      if (!updated) return c.json({ code: "session_not_found", message: "Tenant not found" } satisfies ErrorResponse, 404 as any);
+      return c.json({ id: updated.id, name: updated.name, max_sessions: updated.maxSessions });
+    });
+
+    app.post("/tenants/:id/rotate-key", (c) => {
+      const tenant = getTenant(c);
+      if (tenant) {
+        return c.json({ code: "invalid_request", message: "Only admin can rotate keys" } satisfies ErrorResponse, 403 as any);
+      }
+
+      const newKey = tenantMgr.rotateApiKey(c.req.param("id"));
+      if (!newKey) return c.json({ code: "session_not_found", message: "Tenant not found" } satisfies ErrorResponse, 404 as any);
+      return c.json({ id: c.req.param("id"), api_key: newKey });
+    });
+
+    app.delete("/tenants/:id", (c) => {
+      const tenant = getTenant(c);
+      if (tenant) {
+        return c.json({ code: "invalid_request", message: "Only admin can delete tenants" } satisfies ErrorResponse, 403 as any);
+      }
+
+      const deleted = tenantMgr.delete(c.req.param("id"));
+      if (!deleted) return c.json({ code: "session_not_found", message: "Tenant not found" } satisfies ErrorResponse, 404 as any);
+      return c.json({ deleted: true });
+    });
+  }
+
   return app;
 }
 
 // --- Helpers ---
 
-async function parseSessionRequest(c: any, sessions?: SessionManager): Promise<SessionRequest | { error: ErrorResponse; status: any }> {
+async function parseSessionRequest(c: any, sessions?: SessionManager, tenantId?: string): Promise<SessionRequest | { error: ErrorResponse; status: any }> {
   let body: SessionRequest;
   try {
     body = (await c.req.json()) as SessionRequest;
@@ -785,7 +943,7 @@ async function parseSessionRequest(c: any, sessions?: SessionManager): Promise<S
     return { error: { code: "invalid_request", message: "Field pinned must be a boolean" }, status: 400 };
   }
 
-  if (body.name && sessions?.nameExists(body.name.trim())) {
+  if (body.name && sessions?.nameExists(body.name.trim(), tenantId)) {
     logger.warn("orchestrator.api", "duplicate_session_name", { name: body.name.trim() });
     return { error: { code: "invalid_request", message: `Session name "${body.name.trim()}" is already in use` }, status: 409 };
   }
@@ -793,7 +951,7 @@ async function parseSessionRequest(c: any, sessions?: SessionManager): Promise<S
   return body;
 }
 
-async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest, requestId?: string) {
+async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest, requestId?: string, tenantId?: string) {
   const model = body.model || "sonnet";
   const maxTurns = body.maxTurns;
   logger.info("orchestrator.session", "spawn_session", {
@@ -849,6 +1007,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
         model,
         systemPrompt: body.systemPrompt,
         maxTurns,
+        tenantId,
       });
 
       logger.info("orchestrator.session", "session_adopted_from_warm_pool", {
@@ -905,6 +1064,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       model,
       systemPrompt: body.systemPrompt,
       maxTurns,
+      tenantId,
     });
 
     logger.debug("orchestrator.session", "session_db_record_created", { session_id: sessionId, request_id: requestId });
