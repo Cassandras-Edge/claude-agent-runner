@@ -5,6 +5,8 @@ import { randomUUID } from "crypto";
 import type { SessionManager } from "./sessions.js";
 import type { WsBridge } from "./ws-bridge.js";
 import type { RunnerEvent } from "./types.js";
+import type { TenantManager } from "./tenants.js";
+import { authenticateWs } from "./auth.js";
 import { logger, runWithLogContext } from "./logger.js";
 
 // --- Client → Server frame types ---
@@ -103,11 +105,12 @@ interface ServerFrame {
 interface AttachOptions {
   bridge: WsBridge;
   sessions: SessionManager;
+  tenants?: TenantManager;
 }
 
 export function attachClientWs(
   httpServer: { on(event: "upgrade", listener: (req: IncomingMessage, socket: Duplex, head: Buffer) => void): any },
-  { bridge, sessions }: AttachOptions,
+  { bridge, sessions, tenants }: AttachOptions,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -117,7 +120,22 @@ export function attachClientWs(
       socket.destroy();
       return;
     }
+
+    // Authenticate via query param when tenants are enabled
+    let tenantId: string | undefined;
+    if (tenants) {
+      const apiKey = url.searchParams.get("key");
+      const tenant = authenticateWs(tenants, apiKey);
+      if (!tenant) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      tenantId = tenant.id;
+    }
+
     wss.handleUpgrade(request, socket, head, (ws) => {
+      (ws as any)._tenantId = tenantId;
       wss.emit("connection", ws, request);
     });
   });
@@ -127,6 +145,7 @@ export function attachClientWs(
     const connectedAt = Date.now();
     const subscriptions = new Map<string, () => void>();
     const remoteAddr = request.headers["x-forwarded-for"] as string || request.socket.remoteAddress || "unknown";
+    const tenantId: string | undefined = (ws as any)._tenantId;
 
     runWithLogContext({ traceId: connectionId, connectionId }, () => {
       logger.event("client-ws", "client_connected", {
@@ -153,6 +172,7 @@ export function attachClientWs(
             subscriptions,
             bridge,
             sessions,
+            tenantId,
           });
         });
       });
@@ -192,6 +212,7 @@ interface HandleContext {
   subscriptions: Map<string, () => void>;
   bridge: WsBridge;
   sessions: SessionManager;
+  tenantId?: string;
 }
 
 function handleFrame(ws: WebSocket, frame: ClientFrame, ctx: HandleContext): void {
@@ -273,6 +294,18 @@ function handleSubscribe(ws: WebSocket, frame: SubscribeFrame, ctx: HandleContex
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
+    sendFrame(ws, {
+      type: "error",
+      error_code: "session_not_found",
+      message: "Session not found",
+      session_id,
+      request_id: ctx.requestId,
+    });
+    return;
+  }
+
+  // Tenant ownership check
+  if (ctx.tenantId && session.tenantId !== ctx.tenantId) {
     sendFrame(ws, {
       type: "error",
       error_code: "session_not_found",

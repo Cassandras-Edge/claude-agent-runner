@@ -36,6 +36,8 @@ export interface SpawnConfig {
   forkFrom?: string;
   forkAt?: string;
   forkSession?: boolean;
+  /** k8s namespace for the pod (used by K8sManager, ignored by DockerManager). */
+  namespace?: string;
 }
 
 /** Backend-agnostic interface for container/pod lifecycle management. */
