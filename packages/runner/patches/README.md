@@ -9,10 +9,10 @@ Tools and patches for modifying Claude Code's embedded JavaScript.
 bun run scripts/patch-all.js --js-only
 
 # Apply against a snapshot (recommended for dev)
-bun run scripts/patch-all.js --binary snapshots/claude-2.1.52 --js-only
+bun run scripts/patch-all.js --binary snapshots/cli-2.1.63.js --js-only
 
 # Preview without writing
-bun run scripts/patch-all.js --binary snapshots/claude-2.1.52 --js-only --dry-run
+bun run scripts/patch-all.js --binary snapshots/cli-2.1.63.js --js-only --dry-run
 
 # Apply + replace system binary
 bun run scripts/patch-all.js --install
@@ -32,6 +32,7 @@ After `claude update`, re-run `bun run scripts/patch-all.js`.
 | `memory-ipc` | template | js-only | Unix socket IPC for live context surgery |
 | `mcp-background` | template | js-only | `run_in_background` for all MCP tool calls |
 | `no-sibling-abort` | replacement | both | Remove sibling tool call abort — each tool completes independently |
+| `compact-instructions` | template | js-only | Inject custom compaction prompts from `RUNNER_COMPACT_INSTRUCTIONS` env |
 
 **Target:**
 - `both` — applied to the binary (CLI) and extracted JS (SDK)
@@ -135,14 +136,14 @@ Keep a stable binary snapshot for development instead of patching the system bin
 
 ```bash
 # Create snapshot (one-time)
-cp ~/.local/share/claude/versions/2.1.52 snapshots/claude-2.1.52
+cp ~/.local/share/claude/versions/2.1.63 snapshots/cli-2.1.63.js
 
 # Extract JS for analysis
 node -e "const {extractJS}=await import('./lib/patcher.js'); \
-  require('fs').writeFileSync('snapshots/cli-2.1.52.js', extractJS('snapshots/claude-2.1.52'))"
+  require('fs').writeFileSync('snapshots/cli-2.1.63.js', extractJS('snapshots/cli-2.1.63.js'))"
 
 # Patch against snapshot
-bun run scripts/patch-all.js --binary snapshots/claude-2.1.52 --js-only
+bun run scripts/patch-all.js --binary snapshots/cli-2.1.63.js --js-only
 ```
 
 ## After `claude update`

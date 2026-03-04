@@ -45,6 +45,8 @@ jobs:
             dockerfile: packages/orchestrator/Dockerfile
           - image: runner
             dockerfile: packages/runner/Dockerfile
+          - image: vault-sync
+            dockerfile: packages/orchestrator/Dockerfile.vault-sync
 
     steps:
       - name: Checkout

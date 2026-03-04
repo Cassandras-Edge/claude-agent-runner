@@ -23,6 +23,8 @@ Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/s
 | **Auto-compaction** | Manual | Orchestrator monitors context % and compacts when idle |
 | **MCP server injection** | Config files | Pass MCP servers per session at creation time |
 | **Path restrictions** | Config files | Per-session `allowedPaths` enforced via PreToolUse hook |
+| **Vault sync** | Not available | Obsidian vault sessions via headless sidecar — live sync to `/workspace` |
+| **Warm pool** | Not available | Pre-spawned containers for near-instant session creation |
 
 ## Architecture
 
@@ -38,6 +40,7 @@ Client (REST / SSE / WebSocket)
 │  SQLite session persistence      │
 │  OAuth token pool (round-robin)  │
 │  Auto-compactor                  │
+│  Warm pool (optional)            │
 └────────────┬─────────────────────┘
              │ Docker API + WS
              ▼
@@ -159,6 +162,22 @@ Full OpenAPI 3.1 spec: [`openapi.yaml`](openapi.yaml)
 | `DELETE` | `/sessions/:id` | Stop and remove session |
 | `GET` | `/sessions/:id/transcript` | Get JSONL transcript |
 
+### Vaults (Obsidian Sync)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/vaults` | List active vault sync volumes and sidecar status |
+
+Create a vault-backed session by passing `vault` instead of `repo`/`workspace`:
+
+```bash
+curl -X POST http://localhost:9080/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"vault": "My Vault", "message": "Summarize my notes on project X"}'
+```
+
+Requires `OBSIDIAN_AUTH_TOKEN` and a built `vault-sync` image (see Configuration).
+
 ### Messages
 
 | Method | Path | Description |
@@ -266,6 +285,10 @@ All configuration via environment variables. See [`.env.example`](.env.example).
 | `DB_PATH` | No | SQLite database path (default: `/app/data/orchestrator.db`) |
 | `AUTO_COMPACT_THRESHOLD_PCT` | No | Context % threshold for auto-compaction |
 | `AUTO_COMPACT_IDLE_SECONDS` | No | Seconds idle before auto-compact fires |
+| `WARM_POOL_SIZE` | No | Number of pre-spawned warm containers (default: `0` = disabled) |
+| `OBSIDIAN_AUTH_TOKEN` | No | Obsidian sync token (required for vault sessions) |
+| `OBSIDIAN_E2EE_PASSWORD` | No | Obsidian E2E encryption password (if vault is encrypted) |
+| `VAULT_SYNC_IMAGE` | No | Docker image for vault sidecar (default: `vault-sync:latest`) |
 
 ## CLI Patches
 
@@ -335,6 +358,7 @@ packages/
 │       ├── ws-bridge.ts     # Internal WS bridge to runners (:8081)
 │       ├── client-ws.ts     # Client-facing WS API (:8080/ws)
 │       ├── auto-compact.ts  # AutoCompactor (context % monitoring)
+│       ├── warm-pool.ts     # WarmPool (pre-spawned container pool)
 │       ├── token-pool.ts    # OAuth token round-robin
 │       └── db.ts            # SQLite schema + snapshots
 └── runner/            # Claude Agent SDK wrapper (runs inside Docker)
@@ -370,6 +394,9 @@ docker compose build --no-cache
 # Or build individually
 docker build -f packages/orchestrator/Dockerfile -t claude-orchestrator .
 docker build -f packages/runner/Dockerfile -t claude-runner .
+
+# Build vault sync sidecar (only needed for vault sessions)
+docker compose --profile build-only build vault-sync
 ```
 
 ## License
