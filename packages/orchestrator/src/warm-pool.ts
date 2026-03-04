@@ -21,7 +21,6 @@ export interface WarmPoolConfig {
   orchestratorWsUrl: string;
   network: string;
   sessionsVolume: string;
-  vaultsVolume: string;
   env: Record<string, string>;
 }
 
@@ -117,8 +116,7 @@ export class WarmPool {
         env: { ...this.config.env, CLAUDE_CODE_OAUTH_TOKEN: token },
         network: this.config.network,
         sessionsVolume: this.config.sessionsVolume,
-        vaultsVolume: this.config.vaultsVolume,
-        // No repo, workspace, or additionalDirectories for warm containers
+        // No repo, workspace, vault, or additionalDirectories for warm containers
       });
       entry.containerId = containerId;
 

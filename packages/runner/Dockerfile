@@ -35,8 +35,8 @@ RUN npm run build --workspace=packages/runner
 
 FROM node:22-alpine
 
-# Install git, common tools for agent work, and ACL utilities for vault permissions
-RUN apk add --no-cache git curl bash openssh-client acl
+# Install git and common tools for agent work
+RUN apk add --no-cache git curl bash openssh-client
 
 # Install Claude Code CLI globally (required by agent SDK)
 RUN npm install -g @anthropic-ai/claude-code@2.1.63 && npm cache clean --force
@@ -44,8 +44,10 @@ RUN npm install -g @anthropic-ai/claude-code@2.1.63 && npm cache clean --force
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
 
+# Install Obsidian headless CLI for vault sync
+RUN npm install -g obsidian-headless && npm cache clean --force
+
 # Create runner user in the node group (GID 1000).
-# GID 1000 matches the vaults group in the vault-sync sidecar for shared volume permissions.
 RUN adduser -S runner -G node
 WORKDIR /app
 
@@ -64,9 +66,6 @@ COPY --from=patcher /patches/dist/cli-patched.js /opt/claude/cli-patched.js
 
 # Workspace directory where repos get cloned or dirs get mounted
 RUN mkdir -p /workspace && chown runner:node /workspace
-
-# Vaults mount point (shared volume, ACL-gated per vault)
-RUN mkdir -p /vaults
 
 # Claude Code expects these directories/files to exist
 RUN mkdir -p /home/runner/.claude/debug /home/runner/.claude/plugins && \

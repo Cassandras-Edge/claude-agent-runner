@@ -7,7 +7,7 @@ export type UserContentBlock =
   | { type: "text"; text: string }
   | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
 
-export type SessionStatus = "starting" | "cloning" | "ready" | "busy" | "idle" | "stopped" | "error";
+export type SessionStatus = "starting" | "cloning" | "syncing" | "ready" | "busy" | "idle" | "stopped" | "error";
 
 export type ErrorCode =
   | "invalid_request"

@@ -5,7 +5,7 @@ import {
   unstable_v2_resumeSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
-import { execSync } from "child_process";
+import { execSync, spawn as spawnChild, type ChildProcess } from "child_process";
 import { existsSync, mkdirSync } from "fs";
 import { randomUUID } from "crypto";
 import type { OrchestratorCommand, OrchestratorForkAndSteerCommand, OrchestratorPermissionResponseCommand, ContextOperation } from "@claude-agent-runner/shared";
@@ -52,6 +52,7 @@ let MCP_SERVERS: Record<string, { command: string; args?: string[] }> = process.
 let ALLOWED_PATHS: string[] = process.env.RUNNER_ALLOWED_PATHS
   ? JSON.parse(process.env.RUNNER_ALLOWED_PATHS)
   : [];
+let VAULT = process.env.RUNNER_VAULT;
 const FORK_FROM = process.env.RUNNER_FORK_FROM;
 const FORK_AT = process.env.RUNNER_FORK_AT;
 const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
@@ -76,6 +77,7 @@ logger.info("runner.config", "runner_startup_config", {
   model: MODEL,
   workspace: WORKSPACE,
   repo: REPO ? "provided" : "none",
+  vault: VAULT ? "provided" : "none",
   fork_session: FORK_SESSION,
   branch: BRANCH,
   ipc_socket: MEM_SOCKET_PATH,
@@ -110,6 +112,76 @@ function cloneRepo(): void {
     const message = err instanceof Error ? err.message : String(err);
     logger.error("runner.git", "clone_failed", { session_id: SESSION_ID, repo: REPO, branch: BRANCH, error: message });
     throw new Error(`Git clone failed: ${message}`);
+  }
+}
+
+// --- Vault sync ---
+
+// Background vault sync process (continuous, runs for session lifetime)
+let vaultSyncProcess: ChildProcess | null = null;
+
+function syncVault(): void {
+  if (!VAULT) return;
+
+  const obsidianAuthToken = process.env.OBSIDIAN_AUTH_TOKEN;
+  if (!obsidianAuthToken) {
+    throw new Error("OBSIDIAN_AUTH_TOKEN is required for vault sessions");
+  }
+
+  // Stable device name to avoid exhausting Obsidian's 10-device limit
+  const deviceName = `runner-${VAULT.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 20)}`;
+  const passwordArgs = process.env.OBSIDIAN_E2EE_PASSWORD
+    ? ["--password", process.env.OBSIDIAN_E2EE_PASSWORD]
+    : [];
+
+  logger.info("runner.vault", "vault_sync_start", { vault: VAULT, workspace: WORKSPACE, device: deviceName });
+
+  try {
+    // Register device and configure sync path
+    execSync(
+      ["ob", "sync-setup", "--vault", VAULT, "--path", WORKSPACE, ...passwordArgs, "--device-name", deviceName].map(a => JSON.stringify(a)).join(" "),
+      { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+    );
+
+    // One-shot sync: download all vault files into workspace (blocks until complete)
+    execSync(
+      `ob sync --path ${JSON.stringify(WORKSPACE)}`,
+      { stdio: "inherit", timeout: 120_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+    );
+
+    logger.info("runner.vault", "vault_sync_complete", { vault: VAULT, workspace: WORKSPACE });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error("runner.vault", "vault_sync_failed", { session_id: SESSION_ID, vault: VAULT, error: message });
+    throw new Error(`Vault sync failed: ${message}`);
+  }
+
+  // Start continuous background sync for bidirectional updates during the session
+  try {
+    vaultSyncProcess = spawnChild("ob", ["sync", "--continuous", "--path", WORKSPACE], {
+      stdio: "ignore",
+      detached: false,
+      env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken },
+    });
+
+    vaultSyncProcess.on("exit", (code) => {
+      logger.warn("runner.vault", "background_sync_exited", { vault: VAULT, code });
+      vaultSyncProcess = null;
+    });
+
+    logger.info("runner.vault", "background_sync_started", { vault: VAULT, pid: vaultSyncProcess.pid });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn("runner.vault", "background_sync_failed_to_start", { vault: VAULT, error: message });
+    // Non-fatal: initial sync already completed, continuous sync is best-effort
+  }
+}
+
+function stopVaultSync(): void {
+  if (vaultSyncProcess) {
+    logger.info("runner.vault", "stopping_background_sync", { vault: VAULT, pid: vaultSyncProcess.pid });
+    vaultSyncProcess.kill("SIGTERM");
+    vaultSyncProcess = null;
   }
 }
 
@@ -868,6 +940,9 @@ function connect(): void {
         if (REPO) {
           ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "cloning" }));
           cloneRepo();
+        } else if (VAULT) {
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "syncing" }));
+          syncVault();
         }
 
         if (!existsSync(WORKSPACE)) {
@@ -1554,37 +1629,16 @@ function connect(): void {
       if (cfg.allowedPaths !== undefined) ALLOWED_PATHS = cfg.allowedPaths || [];
 
       try {
-        // If vault is specified, grant ACL access and point workspace to vault path
-        if (cfg.vault) {
-          const vaultPath = `/vaults/${cfg.vault}`;
-          logger.info("runner.ws", "vault_acl_grant", { session_id: SESSION_ID, vault: cfg.vault, path: vaultPath });
+        // Update vault config from adopt payload
+        if (cfg.vault !== undefined) VAULT = cfg.vault;
 
-          try {
-            // Grant runner user read/write/execute access via POSIX ACL
-            execSync(`setfacl -R -m u:runner:rwX ${JSON.stringify(vaultPath)}`, {
-              stdio: "pipe",
-              timeout: 30_000,
-            });
-            // Ensure new files in the vault also get ACL entries (default ACL)
-            execSync(`setfacl -R -d -m u:runner:rwX ${JSON.stringify(vaultPath)}`, {
-              stdio: "pipe",
-              timeout: 30_000,
-            });
-          } catch (aclErr) {
-            const msg = aclErr instanceof Error ? aclErr.message : String(aclErr);
-            logger.warn("runner.ws", "vault_acl_grant_failed", { session_id: SESSION_ID, vault: cfg.vault, error: msg });
-            // Continue anyway — the sidecar sets group permissions that work without ACL
-          }
-
-          // Point workspace directly at the vault path on the shared volume
-          WORKSPACE = vaultPath;
-          logger.info("runner.ws", "vault_workspace_ready", { session_id: SESSION_ID, vault: cfg.vault, workspace: WORKSPACE });
-        }
-
-        // Clone repo if needed
+        // Clone repo or sync vault as needed
         if (REPO) {
           ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "cloning" }));
           cloneRepo();
+        } else if (VAULT) {
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "syncing" }));
+          syncVault();
         }
 
         if (!existsSync(WORKSPACE)) {
@@ -1619,7 +1673,8 @@ function connect(): void {
 
     if (msg.type === "shutdown") {
       logger.info("runner.ws", "shutdown_requested", { session_id: SESSION_ID });
-      // Clean up IPC and session
+      // Clean up vault sync, IPC, and session
+      stopVaultSync();
       ipc?.disconnect();
       session?.close();
       ws.close();

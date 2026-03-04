@@ -33,7 +33,6 @@ const SESSIONS_VOLUME = process.env.SESSIONS_VOLUME || "claude-sessions";
 const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
 
 const WARM_POOL_SIZE = parseInt(process.env.WARM_POOL_SIZE || "0", 10);
-const VAULTS_VOLUME = process.env.VAULTS_VOLUME || "vaults-data";
 
 // --- Token pool ---
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -58,7 +57,6 @@ if (process.env.GITHUB_TOKEN) runnerEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 // Vault sync env vars (optional — required only when using vault source type)
 if (process.env.OBSIDIAN_AUTH_TOKEN) runnerEnv.OBSIDIAN_AUTH_TOKEN = process.env.OBSIDIAN_AUTH_TOKEN;
 if (process.env.OBSIDIAN_E2EE_PASSWORD) runnerEnv.OBSIDIAN_E2EE_PASSWORD = process.env.OBSIDIAN_E2EE_PASSWORD;
-if (process.env.VAULT_SYNC_IMAGE) runnerEnv.VAULT_SYNC_IMAGE = process.env.VAULT_SYNC_IMAGE;
 
 // --- Database ---
 
@@ -92,7 +90,6 @@ if (WARM_POOL_SIZE > 0) {
     orchestratorWsUrl: ORCHESTRATOR_WS_URL,
     network: NETWORK,
     sessionsVolume: SESSIONS_VOLUME,
-    vaultsVolume: VAULTS_VOLUME,
     env: runnerEnv,
   });
 
@@ -141,9 +138,8 @@ logger.info("orchestrator.bootstrap", "token pool state restored", {
   max_token_index: sessions.maxTokenIndex(),
 });
 
-// Ensure Docker network and shared vaults volume exist
+// Ensure Docker network exists
 await docker.ensureNetwork(NETWORK);
-await docker.ensureVaultsVolume(VAULTS_VOLUME);
 
 const app = createServer({
   sessions,
@@ -155,7 +151,6 @@ const app = createServer({
   runnerImage: RUNNER_IMAGE,
   network: NETWORK,
   sessionsVolume: SESSIONS_VOLUME,
-  vaultsVolume: VAULTS_VOLUME,
   sessionsPath: SESSIONS_PATH,
   wsPort: WS_PORT,
   orchestratorWsUrl: ORCHESTRATOR_WS_URL,
