@@ -81,6 +81,7 @@ interface SetOptionsFrame {
   model?: string;
   max_thinking_tokens?: number;
   compact_instructions?: string;
+  permission_mode?: string;
   request_id?: string;
 }
 
@@ -591,7 +592,7 @@ function handleRewind(ws: WebSocket, frame: RewindFrame, ctx: HandleContext): vo
 // --- Set Options ---
 
 function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleContext): void {
-  const { session_id, model, max_thinking_tokens, compact_instructions } = frame;
+  const { session_id, model, max_thinking_tokens, compact_instructions, permission_mode } = frame;
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
@@ -603,6 +604,7 @@ function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleCont
     model,
     maxThinkingTokens: max_thinking_tokens,
     compactInstructions: compact_instructions,
+    permissionMode: permission_mode,
     requestId: ctx.requestId,
     traceId: ctx.connectionId,
   });
@@ -612,6 +614,7 @@ function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleCont
     session_id,
     model,
     max_thinking_tokens,
+    permission_mode,
     ok: sent,
     request_id: ctx.requestId,
   });

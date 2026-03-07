@@ -58,11 +58,33 @@ COPY packages/runner/package.json packages/runner/
 
 RUN npm ci --workspace=packages/shared --workspace=packages/runner --omit=dev && npm cache clean --force
 
+# Patch SDK: V2's SQ constructor hard-codes includePartialMessages:false,
+# ignoring the option from SDKSessionOptions. This enables token-level streaming.
+RUN sed -i 's/includePartialMessages:!1,forkSession/includePartialMessages:Q.includePartialMessages??!1,forkSession/' \
+    node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
 COPY --from=builder /app/packages/runner/dist packages/runner/dist
 
-# Copy patched CLI from patcher stage
+# Copy patched CLI from patcher stage, plus vendor binaries (ripgrep) and WASM files
+# that the CLI resolves relative to itself. Without this, Grep/Glob tools fail with ENOENT.
 COPY --from=patcher /patches/dist/cli-patched.js /opt/claude/cli-patched.js
+RUN cp -r /usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor /opt/claude/vendor && \
+    cp /usr/local/lib/node_modules/@anthropic-ai/claude-code/*.wasm /opt/claude/ 2>/dev/null || true
+
+# Patch CLI: relax --include-partial-messages to work without --print.
+# The underlying stream_event yield code works in interactive mode — the
+# guard is overly restrictive. Remove the `!s||` (--print check) from the guard.
+RUN node -e " \
+  const fs = require('fs'); \
+  let cli = fs.readFileSync('/opt/claude/cli-patched.js', 'utf8'); \
+  const before = 'if(T6){if(!s||h!==\"stream-json\")'; \
+  const after = 'if(T6){if(h!==\"stream-json\")'; \
+  if (!cli.includes(before)) { console.error('Pattern not found'); process.exit(1); } \
+  cli = cli.replace(before, after); \
+  fs.writeFileSync('/opt/claude/cli-patched.js', cli); \
+  console.log('Patched: removed --print requirement for --include-partial-messages'); \
+"
 
 # Workspace directory where repos get cloned or dirs get mounted
 RUN mkdir -p /workspace && chown runner:node /workspace

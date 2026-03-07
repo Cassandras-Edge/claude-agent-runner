@@ -33,6 +33,7 @@ export interface Usage {
 export interface SessionRequest {
   name?: string;
   pinned?: boolean;
+  agentId?: string;
   repo?: string;
   branch?: string;
   workspace?: string;
@@ -68,6 +69,17 @@ export interface ForkRequest {
   pinned?: boolean;
 }
 
+export interface RestorableSessionConfig {
+  vaultName?: string;
+  agentId?: string;
+  thinking?: boolean;
+  additionalDirectories?: string[];
+  compactInstructions?: string;
+  permissionMode?: string;
+  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  allowedPaths?: string[];
+}
+
 // --- API Response Types ---
 
 export interface SessionResponse {
@@ -91,9 +103,10 @@ export interface SessionInfo {
   session_id: string;
   name?: string;
   pinned?: boolean;
+  agent_id?: string;
   status: SessionStatus;
   source: {
-    type: "repo" | "workspace" | "vault";
+    type: "repo" | "workspace" | "vault" | "ephemeral";
     repo?: string;
     branch?: string;
     workspace?: string;
@@ -109,6 +122,8 @@ export interface SessionDetail extends SessionInfo {
   total_usage: Omit<Usage, "duration_ms">;
   error?: string;
   container_id?: string;
+  sdk_session_id?: string;
+  forked_from?: string;
   context_tokens?: number;
   compact_count?: number;
   last_compact_at?: string;
@@ -200,6 +215,13 @@ export interface RunnerPermissionRequestMessage extends WsCorrelation {
   input: any;
 }
 
+export interface RunnerUtilityQueryResultMessage extends WsCorrelation {
+  type: "utility_query_result";
+  session_id: string;
+  text?: string;
+  error?: string;
+}
+
 export type RunnerMessage =
   | RunnerStatusMessage
   | RunnerEventMessage
@@ -209,6 +231,7 @@ export type RunnerMessage =
   | RunnerContextResultMessage
   | RunnerContextSnapshotMessage
   | RunnerPermissionRequestMessage
+  | RunnerUtilityQueryResultMessage
   | RunnerCommandsResultMessage;
 
 /** Orchestrator → Runner: send a message to the agent */
@@ -310,6 +333,15 @@ export interface OrchestratorGetCommandsCommand extends WsCorrelation {
   type: "get_commands";
 }
 
+/** Orchestrator → Runner: one-shot utility query (no tools, no session persistence) */
+export interface OrchestratorUtilityQueryCommand extends WsCorrelation {
+  type: "utility_query";
+  prompt: string;
+  model?: string;
+  systemPrompt?: string;
+  maxTokens?: number;
+}
+
 /** Orchestrator → Runner: adopt a warm container for a real session */
 export interface OrchestratorAdoptCommand {
   type: "adopt";
@@ -352,7 +384,8 @@ export type OrchestratorCommand =
   | OrchestratorSetOptionsCommand
   | OrchestratorPermissionResponseCommand
   | OrchestratorGetCommandsCommand
-  | OrchestratorAdoptCommand;
+  | OrchestratorAdoptCommand
+  | OrchestratorUtilityQueryCommand;
 
 // --- Context Snapshot Types ---
 
@@ -369,4 +402,3 @@ export interface ContextSnapshotSummary {
 export interface ContextSnapshot extends ContextSnapshotSummary {
   messages: any[];
 }
-

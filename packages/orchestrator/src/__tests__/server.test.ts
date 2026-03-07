@@ -130,7 +130,12 @@ describe("Server Routes", () => {
     });
 
     it("returns sessions with correct shape", async () => {
-      sessions.create("s1", "c1", 0, { model: "sonnet", repo: "https://github.com/test/repo", branch: "main" });
+      sessions.create("s1", "c1", 0, {
+        model: "sonnet",
+        repo: "https://github.com/test/repo",
+        branch: "main",
+        agentId: "agent-a",
+      });
       sessions.updateStatus("s1", "ready");
 
       const { json } = await jsonResponse(app, "GET", "/sessions");
@@ -138,6 +143,7 @@ describe("Server Routes", () => {
 
       const s = json.sessions[0];
       expect(s.session_id).toBe("s1");
+      expect(s.agent_id).toBe("agent-a");
       expect(s.status).toBe("ready");
       expect(s.source.type).toBe("repo");
       expect(s.source.repo).toBe("https://github.com/test/repo");
@@ -165,13 +171,22 @@ describe("Server Routes", () => {
 
   describe("GET /sessions/:id", () => {
     it("returns session detail", async () => {
-      sessions.create("s1", "c1", 0, { model: "sonnet", repo: "https://github.com/test/repo" });
+      sessions.create("s1", "c1", 0, {
+        model: "sonnet",
+        repo: "https://github.com/test/repo",
+        agentId: "agent-a",
+        forkedFrom: "parent-session",
+      });
+      sessions.setSdkSessionId("s1", "sdk-123");
       sessions.updateStatus("s1", "ready");
 
       const { status, json } = await jsonResponse(app, "GET", "/sessions/s1");
       expect(status).toBe(200);
       expect(json.session_id).toBe("s1");
+      expect(json.agent_id).toBe("agent-a");
       expect(json.container_id).toBe("c1");
+      expect(json.sdk_session_id).toBe("sdk-123");
+      expect(json.forked_from).toBe("parent-session");
       expect(json.total_usage).toEqual({ input_tokens: 0, output_tokens: 0, cost_usd: 0 });
     });
 
@@ -240,6 +255,132 @@ describe("Server Routes", () => {
       const { status, json } = await jsonResponse(app, "DELETE", "/sessions/unknown");
       expect(status).toBe(404);
       expect(json.code).toBe("session_not_found");
+    });
+  });
+
+  describe("POST /sessions/:id/stop", () => {
+    it("stops a session without deleting its metadata", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      sessions.updateStatus("s1", "ready");
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions/s1/stop");
+
+      expect(status).toBe(200);
+      expect(json.session_id).toBe("s1");
+      expect(json.status).toBe("stopped");
+      expect(bridge.sendShutdown).toHaveBeenCalledWith("s1");
+      expect(docker.kill).toHaveBeenCalledWith("s1");
+      expect(sessions.get("s1")!.status).toBe("stopped");
+    });
+  });
+
+  describe("POST /sessions/:id/resume", () => {
+    it("respawns a stopped session using stored config", async () => {
+      sessions.create("s1", "c1", 0, {
+        model: "sonnet",
+        vaultName: "vault-a",
+        agentId: "agent-a",
+        systemPrompt: "be helpful",
+        maxTurns: 7,
+        thinking: true,
+        additionalDirectories: ["/tmp/a"],
+        compactInstructions: "compact please",
+        permissionMode: "default",
+        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        allowedPaths: ["/workspace", "/tmp/a"],
+      });
+      sessions.setSdkSessionId("s1", "sdk-123");
+      sessions.updateStatus("s1", "stopped");
+
+      docker.spawn.mockImplementationOnce(async (config: any) => {
+        setTimeout(() => {
+          sessions.updateStatus(config.sessionId, "ready");
+          bridge.emit(`status:${config.sessionId}`, "ready");
+        }, 0);
+        return "container-resumed";
+      });
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions/s1/resume");
+
+      expect(status).toBe(200);
+      expect(json.session_id).toBe("s1");
+      expect(json.status).toBe("ready");
+      expect(docker.spawn).toHaveBeenCalledWith(expect.objectContaining({
+        sessionId: "s1",
+        vault: "vault-a",
+        model: "sonnet",
+        systemPrompt: "be helpful",
+        maxTurns: 7,
+        thinking: true,
+        additionalDirectories: ["/tmp/a"],
+        compactInstructions: "compact please",
+        permissionMode: "default",
+        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        allowedPaths: ["/workspace", "/tmp/a"],
+        sdkSessionId: "sdk-123",
+      }));
+      expect(sessions.get("s1")!.containerId).toBe("container-resumed");
+      expect(sessions.get("s1")!.status).toBe("ready");
+    });
+  });
+
+  describe("POST /sessions/:id/fork", () => {
+    it("inherits persisted session config in the forked child", async () => {
+      sessions.create("parent", "c1", 0, {
+        model: "sonnet",
+        vaultName: "vault-a",
+        agentId: "agent-a",
+        systemPrompt: "be helpful",
+        maxTurns: 7,
+        pinned: true,
+        thinking: true,
+        additionalDirectories: ["/tmp/a"],
+        compactInstructions: "compact please",
+        permissionMode: "default",
+        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        allowedPaths: ["/workspace", "/tmp/a"],
+      });
+      sessions.setSdkSessionId("parent", "sdk-parent");
+      sessions.updateStatus("parent", "ready");
+
+      docker.spawn.mockImplementationOnce(async (config: any) => {
+        setTimeout(() => {
+          sessions.updateStatus(config.sessionId, "ready");
+          bridge.emit(`status:${config.sessionId}`, "ready");
+        }, 0);
+        return "container-forked";
+      });
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions/parent/fork", {});
+
+      expect(status).toBe(200);
+      expect(json.forked_from).toBe("parent");
+      expect(docker.spawn).toHaveBeenCalledWith(expect.objectContaining({
+        vault: "vault-a",
+        model: "sonnet",
+        systemPrompt: "be helpful",
+        maxTurns: 7,
+        thinking: true,
+        additionalDirectories: ["/tmp/a"],
+        compactInstructions: "compact please",
+        permissionMode: "default",
+        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        allowedPaths: ["/workspace", "/tmp/a"],
+        forkFrom: "sdk-parent",
+        forkSession: true,
+      }));
+
+      const child = sessions.list().find((session) => session.id !== "parent");
+      expect(child).toBeDefined();
+      expect(child!.vaultName).toBe("vault-a");
+      expect(child!.agentId).toBe("agent-a");
+      expect(child!.thinking).toBe(true);
+      expect(child!.additionalDirectories).toEqual(["/tmp/a"]);
+      expect(child!.compactInstructions).toBe("compact please");
+      expect(child!.permissionMode).toBe("default");
+      expect(child!.allowedPaths).toEqual(["/workspace", "/tmp/a"]);
+      expect(child!.forkedFrom).toBe("parent");
+      expect(child!.pinned).toBe(true);
     });
   });
 

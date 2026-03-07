@@ -53,6 +53,7 @@ let ALLOWED_PATHS: string[] = process.env.RUNNER_ALLOWED_PATHS
   ? JSON.parse(process.env.RUNNER_ALLOWED_PATHS)
   : [];
 let VAULT = process.env.RUNNER_VAULT;
+
 const FORK_FROM = process.env.RUNNER_FORK_FROM;
 const FORK_AT = process.env.RUNNER_FORK_AT;
 const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
@@ -137,26 +138,30 @@ function syncVault(): void {
   logger.info("runner.vault", "vault_sync_start", { vault: VAULT, workspace: WORKSPACE, device: deviceName });
 
   try {
+    // Unlink any stale sync state from a previous session (avoids "already running" lock)
+    try {
+      execSync(
+        `ob sync-unlink --path ${JSON.stringify(WORKSPACE)}`,
+        { stdio: "pipe", timeout: 10_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+      );
+    } catch { /* no prior config to unlink — expected on first run */ }
+
     // Register device and configure sync path
     execSync(
       ["ob", "sync-setup", "--vault", VAULT, "--path", WORKSPACE, ...passwordArgs, "--device-name", deviceName].map(a => JSON.stringify(a)).join(" "),
       { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
     );
 
-    // One-shot sync: download all vault files into workspace (blocks until complete)
-    execSync(
-      `ob sync --path ${JSON.stringify(WORKSPACE)}`,
-      { stdio: "inherit", timeout: 120_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
-    );
-
-    logger.info("runner.vault", "vault_sync_complete", { vault: VAULT, workspace: WORKSPACE });
+    logger.info("runner.vault", "vault_sync_setup_complete", { vault: VAULT, workspace: WORKSPACE });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error("runner.vault", "vault_sync_failed", { session_id: SESSION_ID, vault: VAULT, error: message });
     throw new Error(`Vault sync failed: ${message}`);
   }
 
-  // Start continuous background sync for bidirectional updates during the session
+  // Start continuous sync immediately — pulls vault files in the background
+  // so session creation doesn't block for 90+ seconds waiting for a full sync.
+  // Files appear progressively; CLAUDE.md and small files arrive within seconds.
   try {
     vaultSyncProcess = spawnChild("ob", ["sync", "--continuous", "--path", WORKSPACE], {
       stdio: "ignore",
@@ -173,7 +178,7 @@ function syncVault(): void {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.warn("runner.vault", "background_sync_failed_to_start", { vault: VAULT, error: message });
-    // Non-fatal: initial sync already completed, continuous sync is best-effort
+    // Non-fatal: background sync is best-effort, files will appear progressively
   }
 }
 
@@ -434,6 +439,13 @@ async function runTurn(
       });
       throw err;
     }
+  }
+
+  // Apply per-message thinking tokens override
+  if (overrides?.maxThinkingTokens !== undefined) {
+    try {
+      await (session as any).setMaxThinkingTokens(overrides.maxThinkingTokens);
+    } catch { /* SDK may not support setMaxThinkingTokens */ }
   }
 
   // Send message to the session (string or content blocks)
@@ -932,7 +944,7 @@ function connect(): void {
   logger.info("runner.ws", "connecting", { orchestrator_url: ORCHESTRATOR_URL, session_id: SESSION_ID });
   const ws = new WebSocket(ORCHESTRATOR_URL!);
 
-  ws.on("open", () => {
+  ws.on("open", async () => {
     logger.info("runner.ws", "connected", { session_id: SESSION_ID });
 
     try {
@@ -948,8 +960,22 @@ function connect(): void {
         if (!existsSync(WORKSPACE)) {
           mkdirSync(WORKSPACE, { recursive: true });
         }
+        process.chdir(WORKSPACE);
 
         setupCompleted = true;
+      }
+
+      // Eagerly create SDK session during warm phase so the CLI is already
+      // running when adopt happens. Adopt can then reconfigure in-place.
+      if (!session && !REPO && !VAULT) {
+        try {
+          session = await createOrResumeSession(ws);
+          logger.info("runner.ws", "warm_session_preloaded");
+        } catch (err) {
+          logger.warn("runner.ws", "warm_session_preload_failed", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready" }));
@@ -999,7 +1025,7 @@ function connect(): void {
         let currentMessage: string | any = msg.content || msg.message;
         let currentModel = msg.model;
         let currentMaxTurns = msg.maxTurns;
-        let currentMaxThinkingTokens = msg.maxThinkingTokens;
+        let currentMaxThinkingTokens = msg.maxThinkingTokens ?? (globalThis as any).__runnerMaxThinkingTokensOverride;
         let currentRequestId = requestId;
         let currentTraceId = traceId;
 
@@ -1527,6 +1553,22 @@ function connect(): void {
         activeCompactInstructions = optMsg.compact_instructions;
         logger.info("runner.ws", "compact_instructions_override_set", { session_id: SESSION_ID });
       }
+      if (optMsg.permission_mode) {
+        const newMode = optMsg.permission_mode;
+        if (newMode !== PERMISSION_MODE) {
+          PERMISSION_MODE = newMode;
+          // Permission mode is a CLI arg — close session so next runTurn recreates with new mode.
+          // Context is preserved: resumeSession loads conversation history from the session file.
+          if (session) {
+            session.close();
+            session = null;
+            logger.info("runner.ws", "session_closed_for_permission_mode_change", {
+              session_id: SESSION_ID,
+              new_mode: newMode,
+            });
+          }
+        }
+      }
 
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
@@ -1595,6 +1637,71 @@ function connect(): void {
       return;
     }
 
+    if (msg.type === "utility_query") {
+      const uqMsg = msg as any;
+      const requestId = uqMsg.request_id;
+      const traceId = uqMsg.trace_id;
+      logger.info("runner.ws", "utility_query_received", {
+        session_id: SESSION_ID,
+        model: uqMsg.model,
+        prompt_preview: uqMsg.prompt?.slice(0, 80),
+      });
+      (async () => {
+        try {
+          const response = query({
+            prompt: uqMsg.prompt,
+            options: {
+              cwd: WORKSPACE,
+              model: uqMsg.model || "haiku",
+              systemPrompt: uqMsg.systemPrompt || undefined,
+              tools: [],
+              permissionMode: "bypassPermissions",
+              allowDangerouslySkipPermissions: true,
+              persistSession: false,
+              ...(PATCHED_CLI_PATH ? { pathToClaudeCodeExecutable: PATCHED_CLI_PATH, executable: "bun" as const } : {}),
+            },
+          });
+
+          let text = "";
+          for await (const message of response) {
+            if ((message as any).type === "assistant" && (message as any).message?.content) {
+              for (const block of (message as any).message.content) {
+                if ((block as any).type === "text" && (block as any).text) {
+                  text += (block as any).text;
+                }
+              }
+            }
+          }
+
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "utility_query_result",
+              session_id: SESSION_ID,
+              text,
+              request_id: requestId,
+              trace_id: traceId,
+            }));
+          }
+        } catch (err) {
+          logger.error("runner.ws", "utility_query_failed", {
+            session_id: SESSION_ID,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: "utility_query_result",
+              session_id: SESSION_ID,
+              text: "",
+              error: err instanceof Error ? err.message : String(err),
+              request_id: requestId,
+              trace_id: traceId,
+            }));
+          }
+        }
+      })();
+      return;
+    }
+
     if (msg.type === "adopt") {
       const adoptMsg = msg as any;
       logger.info("runner.ws", "adopt_received", {
@@ -1645,28 +1752,43 @@ function connect(): void {
           mkdirSync(WORKSPACE, { recursive: true });
         }
 
-        // Close old warm-pool session and create fresh one with the correct workspace/config.
-        // We must clear sdkSessionId so createOrResumeSession creates a new session
-        // (not resume the warm pool's ephemeral session with the wrong cwd).
-        if (session) {
-          session.close();
-          session = null;
-        }
-        sdkSessionId = undefined;
-
-        // Change process cwd so the SDK CLI subprocess inherits the correct working directory.
-        // The SDK passes opts.cwd to spawn(), but some code paths may use process.cwd() instead.
         process.chdir(WORKSPACE);
 
-        // Eagerly create SDK session so first message is instant
-        session = await createOrResumeSession(ws);
-        logger.info("runner.ws", "adopt_session_created", { session_id: SESSION_ID });
+        // Reconfigure existing session in-place if available (avoids CLI restart).
+        // The warm phase eagerly creates a session, so we can just update its config.
+        if (session) {
+          logger.info("runner.ws", "adopt_reconfiguring_session", { session_id: SESSION_ID });
+          if (cfg.model) await (session as any).setModel(cfg.model);
+          if (cfg.mcpServers !== undefined) await (session as any).setMcpServers(cfg.mcpServers || {});
+          if (cfg.permissionMode) await (session as any).setPermissionMode(cfg.permissionMode);
+          if (THINKING) await (session as any).setMaxThinkingTokens(10000);
+          else await (session as any).setMaxThinkingTokens(0);
+          logger.info("runner.ws", "adopt_session_reconfigured", { session_id: SESSION_ID });
+        } else {
+          // No warm session — create fresh (fallback for vault/repo containers)
+          session = await createOrResumeSession(ws);
+          logger.info("runner.ws", "adopt_session_created", { session_id: SESSION_ID });
+        }
 
         ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready" }));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logger.error("runner.ws", "adopt_failed", { session_id: SESSION_ID, error: message });
-        ws.send(JSON.stringify({ type: "error", session_id: SESSION_ID, code: "adopt_failed", message }));
+        // Fallback: if reconfigure failed, try creating a fresh session
+        try {
+          if (session) {
+            session.close();
+            session = null;
+          }
+          sdkSessionId = undefined;
+          session = await createOrResumeSession(ws);
+          logger.info("runner.ws", "adopt_fallback_session_created", { session_id: SESSION_ID });
+          ws.send(JSON.stringify({ type: "status", session_id: SESSION_ID, status: "ready" }));
+        } catch (fallbackErr) {
+          const fallbackMessage = fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+          logger.error("runner.ws", "adopt_fallback_failed", { session_id: SESSION_ID, error: fallbackMessage });
+          ws.send(JSON.stringify({ type: "error", session_id: SESSION_ID, code: "adopt_failed", message: fallbackMessage }));
+        }
       }
       return;
     }

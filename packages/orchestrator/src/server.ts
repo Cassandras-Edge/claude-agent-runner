@@ -14,6 +14,7 @@ import type {
   ErrorResponse,
   RunnerEvent,
   Usage,
+  Session,
 } from "./types.js";
 import type { TokenPool } from "./token-pool.js";
 import type { TenantManager, Tenant } from "./tenants.js";
@@ -124,13 +125,9 @@ export function createServer(ctx: AppContext): Hono {
       session_id: s.id,
       name: s.name,
       pinned: s.pinned,
+      agent_id: s.agentId,
       status: s.status,
-      source: {
-        type: s.repo ? "repo" as const : s.vaultName ? "vault" as const : s.workspace ? "workspace" as const : "ephemeral" as const,
-        ...(s.repo ? { repo: s.repo, branch: s.branch } : {}),
-        ...(s.workspace ? { workspace: s.workspace } : {}),
-        ...(s.vaultName ? { vault: s.vaultName } : {}),
-      },
+      source: getSessionSource(s),
       model: s.model,
       created_at: s.createdAt.toISOString(),
       last_activity: s.lastActivity.toISOString(),
@@ -154,13 +151,9 @@ export function createServer(ctx: AppContext): Hono {
       session_id: session.id,
       name: session.name,
       pinned: session.pinned,
+      agent_id: session.agentId,
       status: session.status,
-      source: {
-        type: session.repo ? "repo" : session.vaultName ? "vault" : session.workspace ? "workspace" : "ephemeral",
-        ...(session.repo ? { repo: session.repo, branch: session.branch } : {}),
-        ...(session.workspace ? { workspace: session.workspace } : {}),
-        ...(session.vaultName ? { vault: session.vaultName } : {}),
-      },
+      source: getSessionSource(session),
       model: session.model,
       created_at: session.createdAt.toISOString(),
       last_activity: session.lastActivity.toISOString(),
@@ -541,6 +534,157 @@ export function createServer(ctx: AppContext): Hono {
     return c.json({ session_id: session.id, name, pinned });
   });
 
+  // --- Sessions: Generate Title ---
+
+  app.post("/sessions/:id/generate-title", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) {
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    let body: { userMessage: string; assistantMessage?: string };
+    try {
+      body = (await c.req.json()) as { userMessage: string; assistantMessage?: string };
+    } catch {
+      return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
+    }
+
+    if (!body.userMessage?.trim()) {
+      return c.json({ code: "invalid_request", message: "userMessage is required" } satisfies ErrorResponse, 400 as any);
+    }
+
+    try {
+      const requestId = randomUUID();
+      const prompt = buildTitlePrompt(body.userMessage, body.assistantMessage);
+
+      // Try to use an ephemeral runner from the pool, fall back to session's runner
+      const ephemeral = ctx.warmPool?.take();
+      const runnerId = ephemeral?.warmId ?? session.id;
+
+      const sent = ctx.bridge.sendUtilityQuery(runnerId, prompt, {
+        model: "haiku",
+        systemPrompt: TITLE_GENERATION_SYSTEM_PROMPT,
+        maxTokens: 60,
+      }, requestId);
+
+      if (!sent) {
+        if (ephemeral) {
+          ctx.tokenPool.release(ephemeral.warmId);
+          await ctx.docker.kill(ephemeral.warmId).catch(() => {});
+          const fallbackSent = ctx.bridge.sendUtilityQuery(session.id, prompt, {
+            model: "haiku",
+            systemPrompt: TITLE_GENERATION_SYSTEM_PROMPT,
+            maxTokens: 60,
+          }, requestId);
+          if (!fallbackSent) {
+            return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 500 as any);
+          }
+        } else {
+          return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 500 as any);
+        }
+      }
+
+      const result = await ctx.bridge.waitForUtilityQueryResult(runnerId, requestId);
+
+      if (ephemeral) {
+        ctx.tokenPool.release(ephemeral.warmId);
+        ctx.docker.kill(ephemeral.warmId).catch(() => {});
+      }
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      const title = parseTitle(result.text);
+      if (title) {
+        ctx.sessions.rename(session.id, title);
+        logger.info("orchestrator.api", "title_generated", { session_id: session.id, title });
+      }
+      return c.json({ title: title || session.name || "" });
+    } catch (err) {
+      logger.error("orchestrator.api", "title_generation_failed", {
+        session_id: session.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return c.json({ code: "internal", message: "Title generation failed" } satisfies ErrorResponse, 500 as any);
+    }
+  });
+
+  // --- Sessions: Suggest Folder ---
+
+  app.post("/sessions/:id/suggest-folder", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) {
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    let body: { title: string; preview: string; folders: string[] };
+    try {
+      body = (await c.req.json()) as { title: string; preview: string; folders: string[] };
+    } catch {
+      return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
+    }
+
+    if (!body.title?.trim() && !body.preview?.trim()) {
+      return c.json({ code: "invalid_request", message: "title or preview is required" } satisfies ErrorResponse, 400 as any);
+    }
+
+    try {
+      const requestId = randomUUID();
+      const prompt = buildFolderPrompt(body.title, body.preview, body.folders);
+
+      const ephemeral = ctx.warmPool?.take();
+      const runnerId = ephemeral?.warmId ?? session.id;
+
+      const sent = ctx.bridge.sendUtilityQuery(runnerId, prompt, {
+        model: "haiku",
+        systemPrompt: FOLDER_SUGGESTION_SYSTEM_PROMPT,
+      }, requestId);
+
+      if (!sent) {
+        if (ephemeral) {
+          ctx.tokenPool.release(ephemeral.warmId);
+          await ctx.docker.kill(ephemeral.warmId).catch(() => {});
+          const fallbackSent = ctx.bridge.sendUtilityQuery(session.id, prompt, {
+            model: "haiku",
+            systemPrompt: FOLDER_SUGGESTION_SYSTEM_PROMPT,
+          }, requestId);
+          if (!fallbackSent) {
+            return c.json({ code: "internal", message: "No runner available" } satisfies ErrorResponse, 500 as any);
+          }
+        } else {
+          return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 500 as any);
+        }
+      }
+
+      const result = await ctx.bridge.waitForUtilityQueryResult(runnerId, requestId);
+
+      if (ephemeral) {
+        ctx.tokenPool.release(ephemeral.warmId);
+        ctx.docker.kill(ephemeral.warmId).catch(() => {});
+      }
+
+      if (result.error) {
+        throw new Error(result.error);
+      }
+
+      const parsed = parseFolderSuggestion(result.text);
+      logger.info("orchestrator.api", "folder_suggested", {
+        session_id: session.id,
+        type: parsed.type,
+        folderName: parsed.folderName,
+      });
+
+      return c.json(parsed);
+    } catch (err) {
+      logger.error("orchestrator.api", "folder_suggestion_failed", {
+        session_id: session.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return c.json({ code: "internal", message: "Folder suggestion failed" } satisfies ErrorResponse, 500 as any);
+    }
+  });
+
   // --- Sessions: Delete ---
 
   app.delete("/sessions/:id", async (c) => {
@@ -551,12 +695,7 @@ export function createServer(ctx: AppContext): Hono {
     }
     logger.info("orchestrator.api", "delete_session_request", { session_id: session.id });
 
-    ctx.bridge.sendShutdown(session.id);
-    await ctx.docker.kill(session.id);
-    ctx.sessions.updateStatus(session.id, "stopped");
-
-    // Note: vault data lives on the shared vaults volume, not a per-session volume.
-    // Use DELETE /vaults/:name to stop the persistent sidecar if needed.
+    await stopSessionRuntime(ctx, session.id);
 
     const result = {
       session_id: session.id,
@@ -565,8 +704,110 @@ export function createServer(ctx: AppContext): Hono {
     };
 
     ctx.sessions.remove(session.id);
-    ctx.tokenPool.release(session.id);
     return c.json(result);
+  });
+
+  // --- Sessions: Stop ---
+
+  app.post("/sessions/:id/stop", async (c) => {
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) {
+      logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id"), context: "stop" });
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+    logger.info("orchestrator.api", "stop_session_request", { session_id: session.id, status: session.status });
+
+    if (session.status !== "stopped" && session.status !== "error") {
+      await stopSessionRuntime(ctx, session.id);
+      ctx.sessions.updateStatus(session.id, "stopped");
+    } else {
+      ctx.sessions.clearRuntime(session.id);
+      ctx.tokenPool.release(session.id);
+    }
+
+    const refreshed = ctx.sessions.get(session.id) ?? session;
+    return c.json({
+      session_id: refreshed.id,
+      status: refreshed.status,
+      total_usage: refreshed.totalUsage,
+    });
+  });
+
+  // --- Sessions: Resume ---
+
+  app.post("/sessions/:id/resume", async (c) => {
+    const requestId = c.req.header("x-request-id") || randomUUID();
+    const session = ctx.sessions.get(c.req.param("id"));
+    if (!session) {
+      logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id"), context: "resume" });
+      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
+    }
+
+    if (session.status !== "stopped" && session.status !== "error") {
+      return c.json({ session_id: session.id, status: session.status });
+    }
+
+    if (!session.sdkSessionId) {
+      return c.json(
+        { code: "invalid_request", message: "Cannot resume session without an SDK session ID", session_id: session.id } satisfies ErrorResponse,
+        400 as any,
+      );
+    }
+
+    logger.info("orchestrator.api", "resume_session_request", {
+      session_id: session.id,
+      status: session.status,
+      request_id: requestId,
+    });
+
+    ctx.sessions.clearRuntime(session.id);
+    ctx.tokenPool.release(session.id);
+    await ctx.docker.kill(session.id).catch(() => undefined);
+
+    const { token, tokenIndex } = ctx.tokenPool.assign(session.id);
+    const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
+
+    try {
+      const containerId = await ctx.docker.spawn({
+        sessionId: session.id,
+        image: ctx.runnerImage,
+        orchestratorUrl: ctx.orchestratorWsUrl,
+        env: sessionEnv,
+        network: ctx.network,
+        sessionsVolume: ctx.sessionsVolume,
+        repo: session.repo,
+        branch: session.branch,
+        workspace: session.workspace,
+        vault: session.vaultName,
+        model: session.model,
+        systemPrompt: session.systemPrompt,
+        maxTurns: session.maxTurns,
+        thinking: session.thinking,
+        additionalDirectories: session.additionalDirectories,
+        compactInstructions: session.compactInstructions,
+        permissionMode: session.permissionMode,
+        mcpServers: session.mcpServers,
+        allowedPaths: session.allowedPaths,
+        sdkSessionId: session.sdkSessionId,
+      });
+
+      ctx.sessions.reactivate(session.id, containerId, tokenIndex);
+      await waitForReady(ctx, session.id, undefined, requestId);
+      return c.json({ session_id: session.id, status: "ready" as const });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error("orchestrator.api", "resume_session_error", {
+        session_id: session.id,
+        message,
+        request_id: requestId,
+      });
+      ctx.bridge.sendShutdown(session.id);
+      await ctx.docker.kill(session.id).catch(() => undefined);
+      ctx.sessions.clearRuntime(session.id);
+      ctx.tokenPool.release(session.id);
+      ctx.sessions.setError(session.id, message);
+      return c.json({ code: categorizeError(message) as any, message, session_id: session.id }, 500 as any);
+    }
   });
 
   // --- Sessions: Fork ---
@@ -618,6 +859,7 @@ export function createServer(ctx: AppContext): Hono {
         env: sessionEnv,
         network: ctx.network,
         sessionsVolume: ctx.sessionsVolume,
+        vault: parent.vaultName,
         repo: parent.repo,
         branch: parent.branch,
         workspace: parent.workspace,
@@ -625,6 +867,12 @@ export function createServer(ctx: AppContext): Hono {
         systemPrompt: body.systemPrompt || parent.systemPrompt,
         appendSystemPrompt: body.appendSystemPrompt,
         maxTurns: body.maxTurns ?? parent.maxTurns,
+        thinking: parent.thinking,
+        additionalDirectories: parent.additionalDirectories,
+        compactInstructions: parent.compactInstructions,
+        permissionMode: parent.permissionMode,
+        mcpServers: parent.mcpServers,
+        allowedPaths: parent.allowedPaths,
         forkFrom: parent.sdkSessionId,
         forkAt: body.resumeAt,
         forkSession: true,
@@ -634,10 +882,18 @@ export function createServer(ctx: AppContext): Hono {
         repo: parent.repo,
         branch: parent.branch,
         workspace: parent.workspace,
+        vaultName: parent.vaultName,
+        agentId: parent.agentId,
         model,
         pinned: body.pinned ?? parent.pinned,
         systemPrompt: body.systemPrompt || parent.systemPrompt,
         maxTurns: body.maxTurns ?? parent.maxTurns,
+        thinking: parent.thinking,
+        additionalDirectories: parent.additionalDirectories,
+        compactInstructions: parent.compactInstructions,
+        permissionMode: parent.permissionMode,
+        mcpServers: parent.mcpServers,
+        allowedPaths: parent.allowedPaths,
         forkedFrom: parent.id,
         tenantId: parent.tenantId,
       });
@@ -960,6 +1216,15 @@ function normalizePath(path: string): string {
     .replace(/\/snapshots\/\d+/g, "/snapshots/:snapId");
 }
 
+function getSessionSource(session: Pick<Session, "repo" | "branch" | "workspace" | "vaultName">) {
+  return {
+    type: session.repo ? "repo" as const : session.vaultName ? "vault" as const : session.workspace ? "workspace" as const : "ephemeral" as const,
+    ...(session.repo ? { repo: session.repo, branch: session.branch } : {}),
+    ...(session.workspace ? { workspace: session.workspace } : {}),
+    ...(session.vaultName ? { vault: session.vaultName } : {}),
+  };
+}
+
 async function parseSessionRequest(c: any, sessions?: SessionManager, tenantId?: string): Promise<SessionRequest | { error: ErrorResponse; status: any }> {
   let body: SessionRequest;
   try {
@@ -985,6 +1250,62 @@ async function parseSessionRequest(c: any, sessions?: SessionManager, tenantId?:
   return body;
 }
 
+const TITLE_GENERATION_SYSTEM_PROMPT = `You are a specialist in summarizing conversations into short titles.
+Given the first user message and optionally the first assistant response, generate a concise title (3-7 words) that captures the main topic.
+Rules:
+- Be specific, not generic ("Fix React useEffect bug" not "Code help")
+- No punctuation at the end
+- No quotes around the title
+- Output ONLY the title, nothing else`;
+
+function buildTitlePrompt(userMessage: string, assistantMessage?: string): string {
+  const truncatedUser = userMessage.slice(0, 500);
+  const parts = [`User: ${truncatedUser}`];
+  if (assistantMessage) {
+    parts.push(`Assistant: ${assistantMessage.slice(0, 500)}`);
+  }
+  return parts.join("\n\n") + "\n\nGenerate a short title for this conversation:";
+}
+
+function parseTitle(text: string): string | null {
+  const cleaned = text.trim().replace(/^["']|["']$/g, "").replace(/[.!?]$/, "").trim();
+  if (!cleaned || cleaned.length < 3) return null;
+  return cleaned.slice(0, 50);
+}
+
+const FOLDER_SUGGESTION_SYSTEM_PROMPT = `You categorize conversations into folders.
+
+Given a conversation title, preview, and a list of existing folder names, decide where to place it.
+
+**Rules**:
+1. If it fits an existing folder, respond: EXISTING: <folder name>
+2. If no folder fits, suggest a new one: NEW: <short category name>
+3. New folder names should be 1-3 words, general enough to hold multiple conversations (e.g., "Code Review", "Research", "DevOps", "Data Analysis").
+4. Do NOT create overly specific folders. Prefer broad categories.
+
+**Output**: Return ONLY one line: either "EXISTING: <name>" or "NEW: <name>". Nothing else.`;
+
+function buildFolderPrompt(title: string, preview: string, folders: string[]): string {
+  const folderList = folders.length > 0
+    ? folders.map(f => `- ${f}`).join("\n")
+    : "(no existing folders)";
+  return `Title: ${title}\nPreview: ${preview}\n\nExisting folders:\n${folderList}\n\nWhich folder should this conversation go in?`;
+}
+
+function parseFolderSuggestion(text: string): { type: "existing" | "new"; folderName: string } {
+  const trimmed = text.trim();
+  const existingMatch = trimmed.match(/^EXISTING:\s*(.+)$/i);
+  if (existingMatch) {
+    return { type: "existing", folderName: existingMatch[1].trim() };
+  }
+  const newMatch = trimmed.match(/^NEW:\s*(.+)$/i);
+  if (newMatch) {
+    return { type: "new", folderName: newMatch[1].trim() };
+  }
+  // Fallback: treat as new folder name
+  return { type: "new", folderName: trimmed.substring(0, 30) };
+}
+
 async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest, requestId?: string, tenantId?: string) {
   const model = body.model || "sonnet";
   const maxTurns = body.maxTurns;
@@ -1002,7 +1323,7 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
   // Vault sessions CAN use warm pool since all warm containers mount the shared vaults volume.
   const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length;
   if (canUseWarmPool) {
-    const warmEntry = ctx.warmPool!.adopt();
+    const warmEntry = ctx.warmPool!.adopt(body.vault, body.agentId);
     if (warmEntry) {
       // Release warm container's token and assign a fresh one for the real session
       ctx.tokenPool.release(warmEntry.warmId);
@@ -1038,9 +1359,16 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
         branch: body.branch,
         workspace: body.workspace,
         vaultName: body.vault,
+        agentId: body.agentId,
         model,
         systemPrompt: body.systemPrompt,
         maxTurns,
+        thinking: body.thinking,
+        additionalDirectories: body.additionalDirectories,
+        compactInstructions: body.compactInstructions,
+        permissionMode: body.permissionMode,
+        mcpServers: body.mcpServers,
+        allowedPaths: body.allowedPaths,
         tenantId,
       });
 
@@ -1099,9 +1427,16 @@ async function spawnSession(ctx: AppContext, sessionId: string, body: SessionReq
       branch: body.branch,
       workspace: body.workspace,
       vaultName: body.vault,
+      agentId: body.agentId,
       model,
       systemPrompt: body.systemPrompt,
       maxTurns,
+      thinking: body.thinking,
+      additionalDirectories: body.additionalDirectories,
+      compactInstructions: body.compactInstructions,
+      permissionMode: body.permissionMode,
+      mcpServers: body.mcpServers,
+      allowedPaths: body.allowedPaths,
       tenantId,
     });
 
@@ -1266,6 +1601,14 @@ async function rollbackSession(ctx: AppContext, sessionId: string, requestId?: s
   ctx.tokenPool.release(sessionId);
 }
 
+async function stopSessionRuntime(ctx: AppContext, sessionId: string): Promise<void> {
+  ctx.bridge.sendShutdown(sessionId);
+  await ctx.docker.kill(sessionId).catch(() => undefined);
+  ctx.sessions.clearRuntime(sessionId);
+  ctx.sessions.updateStatus(sessionId, "stopped");
+  ctx.tokenPool.release(sessionId);
+}
+
 interface ApiError extends Error {
   code: ErrorCode;
   status: number;
@@ -1286,10 +1629,7 @@ function isApiError(err: unknown): err is ApiError {
 
 async function stopSessionForCapacity(ctx: AppContext, sessionId: string): Promise<void> {
   logger.info("orchestrator.capacity", "evicting_session", { session_id: sessionId });
-  ctx.bridge.sendShutdown(sessionId);
-  await ctx.docker.kill(sessionId).catch(() => undefined);
-  ctx.sessions.updateStatus(sessionId, "stopped");
-  ctx.tokenPool.release(sessionId);
+  await stopSessionRuntime(ctx, sessionId);
 }
 
 async function ensureCapacity(ctx: AppContext): Promise<void> {

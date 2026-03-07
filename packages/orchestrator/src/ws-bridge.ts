@@ -161,6 +161,16 @@ export class WsBridge extends EventEmitter {
             break;
           }
 
+          case "utility_query_result":
+            logger.debug("orchestrator.ws_bridge", "runner_utility_query_result", {
+              session_id: sessionId,
+              text_length: (msg as any).text?.length ?? 0,
+              has_error: !!(msg as any).error,
+              request_id: (msg as any).request_id,
+            });
+            this.emit(`utility_query_result:${sessionId}:${(msg as any).request_id}`, msg);
+            break;
+
           default:
             logger.warn("orchestrator.ws_bridge", "unhandled_runner_message_type", {
               session_id: sessionId,
@@ -397,6 +407,7 @@ export class WsBridge extends EventEmitter {
       model?: string;
       maxThinkingTokens?: number;
       compactInstructions?: string;
+      permissionMode?: string;
       requestId?: string;
       traceId?: string;
     },
@@ -411,6 +422,7 @@ export class WsBridge extends EventEmitter {
       ...(options.model ? { model: options.model } : {}),
       ...(options.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       ...(options.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
+      ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
       request_id: options.requestId,
       trace_id: options.traceId,
     }));
@@ -512,6 +524,43 @@ export class WsBridge extends EventEmitter {
     }));
     logger.info("orchestrator.ws_bridge", "sent_adopt_command", { warm_id: warmId, real_id: realId });
     return true;
+  }
+
+  sendUtilityQuery(
+    sessionId: string,
+    prompt: string,
+    options?: { model?: string; systemPrompt?: string; maxTokens?: number },
+    requestId?: string,
+    traceId?: string,
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) { return false; }
+    ws.send(JSON.stringify({
+      type: "utility_query",
+      prompt,
+      model: options?.model,
+      systemPrompt: options?.systemPrompt,
+      maxTokens: options?.maxTokens,
+      request_id: requestId,
+      trace_id: traceId,
+    }));
+    return true;
+  }
+
+  waitForUtilityQueryResult(sessionId: string, requestId: string, timeoutMs = 30000): Promise<{ text: string; error?: string }> {
+    return new Promise((resolve, reject) => {
+      const eventKey = `utility_query_result:${sessionId}:${requestId}`;
+      const timer = setTimeout(() => {
+        this.removeListener(eventKey, onResult);
+        reject(new Error("Timed out waiting for utility query result"));
+      }, timeoutMs);
+      const onResult = (msg: any) => {
+        clearTimeout(timer);
+        this.removeListener(eventKey, onResult);
+        resolve({ text: msg.text || "", error: msg.error });
+      };
+      this.on(eventKey, onResult);
+    });
   }
 
   /** Attach a database reference for persisting snapshots. */

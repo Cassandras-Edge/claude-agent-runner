@@ -12,6 +12,7 @@ import { openDb } from "./db.js";
 import { attachClientWs } from "./client-ws.js";
 import { AutoCompactor } from "./auto-compact.js";
 import { WarmPool } from "./warm-pool.js";
+import type { WarmPoolProfile } from "./warm-pool.js";
 import { TenantManager } from "./tenants.js";
 import { logger } from "./logger.js";
 
@@ -37,6 +38,23 @@ const SESSIONS_PATH = process.env.SESSIONS_PATH || "/data/sessions";
 
 const WARM_POOL_SIZE = parseInt(process.env.WARM_POOL_SIZE || "0", 10);
 const RUNNER_BACKEND = (process.env.RUNNER_BACKEND || "docker") as "docker" | "k8s";
+
+// Warm pool profiles: JSON array of { vault?, agentId?, namespace?, targetSize }
+let warmPoolProfiles: WarmPoolProfile[] = [];
+const rawProfiles = process.env.WARM_POOL_PROFILES;
+if (rawProfiles) {
+  try {
+    warmPoolProfiles = JSON.parse(rawProfiles);
+  } catch (err) {
+    logger.warn("orchestrator.config", "failed_to_parse_WARM_POOL_PROFILES", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+if (warmPoolProfiles.length === 0 && WARM_POOL_SIZE > 0) {
+  warmPoolProfiles = [{ targetSize: WARM_POOL_SIZE }];
+}
+const warmPoolTotalTarget = warmPoolProfiles.reduce((sum, p) => sum + p.targetSize, 0);
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 const ENABLE_TENANTS = process.env.ENABLE_TENANTS === "true";
 
@@ -96,9 +114,9 @@ bridge.on("status", (sessionId: string, status: string) => {
 });
 // --- Warm pool (optional) ---
 let warmPool: WarmPool | undefined;
-if (WARM_POOL_SIZE > 0) {
+if (warmPoolProfiles.length > 0) {
   warmPool = new WarmPool({
-    targetSize: WARM_POOL_SIZE,
+    profiles: warmPoolProfiles,
     docker,
     bridge,
     tokenPool,
@@ -119,7 +137,8 @@ if (WARM_POOL_SIZE > 0) {
 
 logger.info("orchestrator.bootstrap", "session manager, container manager, ws bridge, and auto-compactor initialized", {
   backend: RUNNER_BACKEND,
-  warm_pool_size: WARM_POOL_SIZE,
+  warm_pool_size: warmPoolTotalTarget,
+  warm_pool_profiles: warmPoolProfiles.length,
 });
 
 // Reconcile persisted sessions against live Docker state on startup.
@@ -189,32 +208,16 @@ if (warmPool) {
 }
 
 // --- Idle timeout sweep ---
-
-const idleSweep = setInterval(() => {
-  const now = Date.now();
-  for (const session of sessions.list()) {
-    if (!session.pinned && (session.status === "ready" || session.status === "idle")) {
-      const idle = now - session.lastActivity.getTime();
-      if (idle > IDLE_TIMEOUT_MS) {
-        logger.warn("orchestrator.idle", "stopping_idle_session", {
-          session_id: session.id,
-          idle_seconds: Math.round(idle / 1000),
-          limit_seconds: IDLE_TIMEOUT_MS / 1000,
-        });
-        bridge.sendShutdown(session.id);
-        docker.kill(session.id);
-        sessions.updateStatus(session.id, "stopped");
-        tokenPool.release(session.id);
-      }
-    }
-  }
-}, 30_000);
+// Disabled: capacity eviction (ensureCapacity) handles cleanup on-demand
+// by evicting LRU idle sessions when max_active_sessions is reached.
+// No need to proactively kill sessions on a timer.
+const idleSweep: ReturnType<typeof setInterval> | null = null;
 
 // --- Graceful shutdown ---
 
 async function shutdown() {
   logger.info("orchestrator.shutdown", "shutting_down");
-  clearInterval(idleSweep);
+  if (idleSweep) clearInterval(idleSweep);
   autoCompactor.destroy();
   if (warmPool) {
     await warmPool.destroy();

@@ -108,6 +108,7 @@ export class K8sManager implements ContainerManager {
     if (config.allowedPaths?.length) {
       envVars.push({ name: "RUNNER_ALLOWED_PATHS", value: JSON.stringify(config.allowedPaths) });
     }
+    if (config.sdkSessionId) envVars.push({ name: "RUNNER_SDK_SESSION_ID", value: config.sdkSessionId });
     if (config.forkFrom) envVars.push({ name: "RUNNER_FORK_FROM", value: config.forkFrom });
     if (config.forkAt) envVars.push({ name: "RUNNER_FORK_AT", value: config.forkAt });
     if (config.forkSession) envVars.push({ name: "RUNNER_FORK_SESSION", value: "true" });
@@ -119,16 +120,34 @@ export class K8sManager implements ContainerManager {
     const volumeMounts: k8s.V1VolumeMount[] = [];
     const volumes: k8s.V1Volume[] = [];
 
-    const sessionsPvc = this.config.sessionsPvcName || config.sessionsVolume;
-    if (sessionsPvc) {
-      volumes.push({
-        name: "sessions",
-        persistentVolumeClaim: { claimName: sessionsPvc },
-      });
-      volumeMounts.push({
-        name: "sessions",
-        mountPath: "/home/runner/.claude",
-      });
+    // Vault PVC: per-vault persistent workspace cache.
+    if (config.vault) {
+      const sanitizedVault = config.vault.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      const vaultPvcName = `vault-${sanitizedVault}`;
+      await this.ensurePvc(vaultPvcName, targetNamespace, "vault-cache");
+      volumes.push({ name: "vault-cache", persistentVolumeClaim: { claimName: vaultPvcName } });
+      volumeMounts.push({ name: "vault-cache", mountPath: "/workspace" });
+    }
+
+    // Agent PVC: per-agent Claude config (memory, transcripts) — replaces shared sessions PVC.
+    if (config.agentId) {
+      const sanitizedAgent = config.agentId.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      const agentPvcName = `agent-${sanitizedAgent}`;
+      await this.ensurePvc(agentPvcName, targetNamespace, "agent-config");
+      volumes.push({ name: "agent-config", persistentVolumeClaim: { claimName: agentPvcName } });
+      volumeMounts.push({ name: "agent-config", mountPath: "/home/runner/.claude" });
+    } else {
+      const sessionsPvc = this.config.sessionsPvcName || config.sessionsVolume;
+      if (sessionsPvc) {
+        volumes.push({
+          name: "sessions",
+          persistentVolumeClaim: { claimName: sessionsPvc },
+        });
+        volumeMounts.push({
+          name: "sessions",
+          mountPath: "/home/runner/.claude",
+        });
+      }
     }
 
     // Workspace: in k8s, workspace is typically a PVC or emptyDir.
@@ -340,6 +359,34 @@ export class K8sManager implements ContainerManager {
 
   getContainerId(sessionId: string): string | undefined {
     return this.pods.get(sessionId);
+  }
+
+  private async ensurePvc(name: string, namespace: string, role: string): Promise<void> {
+    try {
+      await this.coreApi.readNamespacedPersistentVolumeClaim({ name, namespace });
+      logger.debug("orchestrator.k8s", "pvc_exists", { name, namespace, role });
+    } catch {
+      logger.info("orchestrator.k8s", "creating_pvc", { name, namespace, role });
+      await this.coreApi.createNamespacedPersistentVolumeClaim({
+        namespace,
+        body: {
+          metadata: {
+            name,
+            namespace,
+            labels: {
+              [LABEL_MANAGED]: "true",
+              role,
+            },
+          },
+          spec: {
+            accessModes: ["ReadWriteOnce"],
+            resources: {
+              requests: { storage: "10Gi" },
+            },
+          },
+        },
+      });
+    }
   }
 
   private async patchPodLabel(podName: string, newSessionId: string, namespace?: string): Promise<void> {

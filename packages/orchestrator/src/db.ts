@@ -23,7 +23,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   sdk_session_id TEXT,
   forked_from TEXT,
   name TEXT,
-  pinned INTEGER NOT NULL DEFAULT 0
+  pinned INTEGER NOT NULL DEFAULT 0,
+  context_tokens INTEGER NOT NULL DEFAULT 0,
+  compact_count INTEGER NOT NULL DEFAULT 0,
+  last_compact_at TEXT,
+  vault_name TEXT,
+  tenant_id TEXT,
+  agent_id TEXT,
+  thinking INTEGER,
+  additional_directories TEXT,
+  compact_instructions TEXT,
+  permission_mode TEXT,
+  mcp_servers TEXT,
+  allowed_paths TEXT
 );
 `;
 
@@ -110,6 +122,13 @@ export interface SessionRow {
   last_compact_at: string | null;
   vault_name: string | null;
   tenant_id: string | null;
+  agent_id: string | null;
+  thinking: number | null;
+  additional_directories: string | null;
+  compact_instructions: string | null;
+  permission_mode: string | null;
+  mcp_servers: string | null;
+  allowed_paths: string | null;
 }
 
 // Idempotent migrations for columns added after initial schema
@@ -121,6 +140,13 @@ const MIGRATIONS = [
   "ALTER TABLE sessions ADD COLUMN last_compact_at TEXT",
   "ALTER TABLE sessions ADD COLUMN vault_name TEXT",
   "ALTER TABLE sessions ADD COLUMN tenant_id TEXT REFERENCES tenants(id)",
+  "ALTER TABLE sessions ADD COLUMN agent_id TEXT",
+  "ALTER TABLE sessions ADD COLUMN thinking INTEGER",
+  "ALTER TABLE sessions ADD COLUMN additional_directories TEXT",
+  "ALTER TABLE sessions ADD COLUMN compact_instructions TEXT",
+  "ALTER TABLE sessions ADD COLUMN permission_mode TEXT",
+  "ALTER TABLE sessions ADD COLUMN mcp_servers TEXT",
+  "ALTER TABLE sessions ADD COLUMN allowed_paths TEXT",
   "CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)",
 ];
 
@@ -188,6 +214,26 @@ export function getSnapshot(
   return stmt.get(snapshotId) as SnapshotRow | undefined;
 }
 
+function parseJsonArray(value: string | null): string[] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseJsonObject<T extends object>(value: string | null): T | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as T : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: number } {
   return {
     id: row.id,
@@ -197,9 +243,17 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     repo: row.repo ?? undefined,
     branch: row.branch ?? undefined,
     workspace: row.workspace ?? undefined,
+    vaultName: row.vault_name ?? undefined,
+    agentId: row.agent_id ?? undefined,
     model: row.model,
     systemPrompt: row.system_prompt ?? undefined,
     maxTurns: row.max_turns ?? undefined,
+    thinking: row.thinking === null ? undefined : row.thinking === 1,
+    additionalDirectories: parseJsonArray(row.additional_directories),
+    compactInstructions: row.compact_instructions ?? undefined,
+    permissionMode: row.permission_mode ?? undefined,
+    mcpServers: parseJsonObject<Record<string, { command: string; args?: string[] }>>(row.mcp_servers),
+    allowedPaths: parseJsonArray(row.allowed_paths),
     createdAt: new Date(row.created_at),
     lastActivity: new Date(row.last_activity),
     messageCount: row.message_count,
@@ -216,7 +270,6 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     contextTokens: row.context_tokens ?? 0,
     compactCount: row.compact_count ?? 0,
     lastCompactAt: row.last_compact_at ? new Date(row.last_compact_at) : undefined,
-    vaultName: row.vault_name ?? undefined,
     tenantId: row.tenant_id ?? undefined,
   };
 }

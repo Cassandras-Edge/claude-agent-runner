@@ -57,6 +57,29 @@ describe("SessionManager", () => {
       expect(session.maxTurns).toBe(10);
     });
 
+    it("stores restorable session config fields", () => {
+      const session = manager.create("s1", "c1", 0, {
+        model: "sonnet",
+        vaultName: "vault-a",
+        agentId: "agent-a",
+        thinking: true,
+        additionalDirectories: ["/tmp/a", "/tmp/b"],
+        compactInstructions: "compact please",
+        permissionMode: "default",
+        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        allowedPaths: ["/workspace", "/tmp/a"],
+      });
+
+      expect(session.vaultName).toBe("vault-a");
+      expect(session.agentId).toBe("agent-a");
+      expect(session.thinking).toBe(true);
+      expect(session.additionalDirectories).toEqual(["/tmp/a", "/tmp/b"]);
+      expect(session.compactInstructions).toBe("compact please");
+      expect(session.permissionMode).toBe("default");
+      expect(session.mcpServers).toEqual({ docs: { command: "npx", args: ["-y", "docs"] } });
+      expect(session.allowedPaths).toEqual(["/workspace", "/tmp/a"]);
+    });
+
     it("stores the oauth token index", () => {
       manager.create("s1", "c1", 2, { model: "sonnet" });
       expect(manager.getTokenIndex("s1")).toBe(2);
@@ -104,6 +127,18 @@ describe("SessionManager", () => {
 
       const session = manager.get("s1");
       expect(session!.status).toBe("ready");
+    });
+
+    it("reactivates a stopped session with a new container and token index", () => {
+      manager.create("s1", "c1", 0, { model: "sonnet" });
+      manager.updateStatus("s1", "stopped");
+
+      manager.reactivate("s1", "c2", 5);
+
+      const session = manager.get("s1");
+      expect(session!.containerId).toBe("c2");
+      expect(session!.status).toBe("starting");
+      expect(manager.getTokenIndex("s1")).toBe(5);
     });
 
     it("is a no-op for non-existent sessions", () => {

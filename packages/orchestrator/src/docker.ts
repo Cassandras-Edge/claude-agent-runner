@@ -21,6 +21,7 @@ export interface SpawnConfig {
   branch?: string;
   workspace?: string;
   vault?: string;
+  agentId?: string;
   model?: string;
   systemPrompt?: string;
   appendSystemPrompt?: string;
@@ -33,6 +34,7 @@ export interface SpawnConfig {
   permissionMode?: string;
   mcpServers?: Record<string, { command: string; args?: string[] }>;
   allowedPaths?: string[];
+  sdkSessionId?: string;
   forkFrom?: string;
   forkAt?: string;
   forkSession?: boolean;
@@ -124,6 +126,7 @@ export class DockerManager implements ContainerManager {
     if (config.allowedPaths?.length) {
       envVars.push(`RUNNER_ALLOWED_PATHS=${JSON.stringify(config.allowedPaths)}`);
     }
+    if (config.sdkSessionId) envVars.push(`RUNNER_SDK_SESSION_ID=${config.sdkSessionId}`);
     if (config.forkFrom) envVars.push(`RUNNER_FORK_FROM=${config.forkFrom}`);
     if (config.forkAt) envVars.push(`RUNNER_FORK_AT=${config.forkAt}`);
     if (config.forkSession) envVars.push(`RUNNER_FORK_SESSION=true`);

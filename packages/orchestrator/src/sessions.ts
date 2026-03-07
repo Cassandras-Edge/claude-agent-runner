@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { Session, SessionStatus, Usage } from "./types.js";
+import type { Session, SessionCreateConfig, SessionStatus, Usage } from "./types.js";
 import type { SessionRow } from "./db.js";
 import { rowToSession } from "./db.js";
 import { logger } from "./logger.js";
@@ -15,31 +15,30 @@ export class SessionManager {
     this.db = db;
   }
 
-  create(id: string, containerId: string, oauthTokenIndex: number, config: {
-    name?: string;
-    pinned?: boolean;
-    repo?: string;
-    branch?: string;
-    workspace?: string;
-    vaultName?: string;
-    model: string;
-    systemPrompt?: string;
-    maxTurns?: number;
-    forkedFrom?: string;
-    tenantId?: string;
-  }): Session {
+  create(id: string, containerId: string, oauthTokenIndex: number, config: SessionCreateConfig): Session {
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO sessions (id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, vault_name, model, system_prompt, max_turns, forked_from, tenant_id, created_at, last_activity)
-      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO sessions (
+        id, container_id, status, oauth_token_index, name, pinned, repo, branch, workspace, vault_name,
+        agent_id, model, system_prompt, max_turns, thinking, additional_directories, compact_instructions,
+        permission_mode, mcp_servers, allowed_paths, forked_from, tenant_id, created_at, last_activity
+      )
+      VALUES (?, ?, 'starting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, containerId, oauthTokenIndex,
       config.name ?? null,
       config.pinned ? 1 : 0,
       config.repo ?? null, config.branch ?? null, config.workspace ?? null,
       config.vaultName ?? null,
+      config.agentId ?? null,
       config.model, config.systemPrompt ?? null, config.maxTurns ?? null,
+      config.thinking === undefined ? null : (config.thinking ? 1 : 0),
+      config.additionalDirectories ? JSON.stringify(config.additionalDirectories) : null,
+      config.compactInstructions ?? null,
+      config.permissionMode ?? null,
+      config.mcpServers ? JSON.stringify(config.mcpServers) : null,
+      config.allowedPaths ? JSON.stringify(config.allowedPaths) : null,
       config.forkedFrom ?? null,
       config.tenantId ?? null,
       now, now,
@@ -53,6 +52,7 @@ export class SessionManager {
       pinned: !!config.pinned,
       forked_from: config.forkedFrom,
       vault_name: config.vaultName,
+      agent_id: config.agentId,
     });
 
     return this.get(id)!;
@@ -100,10 +100,30 @@ export class SessionManager {
       .run(error, new Date().toISOString(), id);
   }
 
+  updateContainerAndToken(id: string, containerId: string, oauthTokenIndex: number): void {
+    logger.info("orchestrator.session", "update_container", { session_id: id, container_id: containerId });
+    this.db.prepare("UPDATE sessions SET container_id = ?, oauth_token_index = ?, status = 'starting', last_activity = ? WHERE id = ?")
+      .run(containerId, oauthTokenIndex, new Date().toISOString(), id);
+  }
+
   setSdkSessionId(id: string, sdkSessionId: string): void {
     logger.debug("orchestrator.session", "sdk_session_id_set", { session_id: id, sdk_session_id: sdkSessionId });
     this.db.prepare("UPDATE sessions SET sdk_session_id = ?, last_activity = ? WHERE id = ?")
       .run(sdkSessionId, new Date().toISOString(), id);
+  }
+
+  reactivate(id: string, containerId: string, oauthTokenIndex: number): void {
+    logger.info("orchestrator.session", "reactivate_session", {
+      session_id: id,
+      container_id: containerId,
+      oauth_token_index: oauthTokenIndex,
+    });
+    this.runtime.delete(id);
+    this.db.prepare(`
+      UPDATE sessions
+      SET container_id = ?, oauth_token_index = ?, status = 'starting', last_error = NULL, last_activity = ?
+      WHERE id = ?
+    `).run(containerId, oauthTokenIndex, new Date().toISOString(), id);
   }
 
   incrementMessages(id: string): void {

@@ -48,6 +48,10 @@ describe("openDb", () => {
       "created_at", "last_activity", "message_count",
       "input_tokens", "output_tokens", "cost_usd", "last_error",
       "sdk_session_id", "forked_from", "name", "pinned",
+      "context_tokens", "compact_count", "last_compact_at",
+      "vault_name", "tenant_id", "agent_id", "thinking",
+      "additional_directories", "compact_instructions",
+      "permission_mode", "mcp_servers", "allowed_paths",
     ];
 
     for (const col of expected) {
@@ -80,6 +84,18 @@ describe("rowToSession", () => {
       forked_from: "parent-session",
       name: "my-session",
       pinned: 1,
+      context_tokens: 321,
+      compact_count: 2,
+      last_compact_at: "2025-01-15T12:03:00.000Z",
+      vault_name: "vault-a",
+      tenant_id: "tenant-a",
+      agent_id: "agent-a",
+      thinking: 1,
+      additional_directories: JSON.stringify(["/tmp/a", "/tmp/b"]),
+      compact_instructions: "keep summaries short",
+      permission_mode: "default",
+      mcp_servers: JSON.stringify({ docs: { command: "npx", args: ["-y", "docs"] } }),
+      allowed_paths: JSON.stringify(["/workspace", "/tmp/a"]),
     };
 
     const session = rowToSession(row);
@@ -103,6 +119,18 @@ describe("rowToSession", () => {
     expect(session.forkedFrom).toBe("parent-session");
     expect(session.name).toBe("my-session");
     expect(session.pinned).toBe(true);
+    expect(session.contextTokens).toBe(321);
+    expect(session.compactCount).toBe(2);
+    expect(session.lastCompactAt).toBeInstanceOf(Date);
+    expect(session.vaultName).toBe("vault-a");
+    expect(session.tenantId).toBe("tenant-a");
+    expect(session.agentId).toBe("agent-a");
+    expect(session.thinking).toBe(true);
+    expect(session.additionalDirectories).toEqual(["/tmp/a", "/tmp/b"]);
+    expect(session.compactInstructions).toBe("keep summaries short");
+    expect(session.permissionMode).toBe("default");
+    expect(session.mcpServers).toEqual({ docs: { command: "npx", args: ["-y", "docs"] } });
+    expect(session.allowedPaths).toEqual(["/workspace", "/tmp/a"]);
   });
 
   it("converts null optional fields to undefined", () => {
@@ -128,6 +156,18 @@ describe("rowToSession", () => {
       forked_from: null,
       name: null,
       pinned: 0,
+      context_tokens: 0,
+      compact_count: 0,
+      last_compact_at: null,
+      vault_name: null,
+      tenant_id: null,
+      agent_id: null,
+      thinking: null,
+      additional_directories: null,
+      compact_instructions: null,
+      permission_mode: null,
+      mcp_servers: null,
+      allowed_paths: null,
     };
 
     const session = rowToSession(row);
@@ -142,5 +182,14 @@ describe("rowToSession", () => {
     expect(session.forkedFrom).toBeUndefined();
     expect(session.name).toBeUndefined();
     expect(session.pinned).toBe(false);
+    expect(session.vaultName).toBeUndefined();
+    expect(session.tenantId).toBeUndefined();
+    expect(session.agentId).toBeUndefined();
+    expect(session.thinking).toBeUndefined();
+    expect(session.additionalDirectories).toBeUndefined();
+    expect(session.compactInstructions).toBeUndefined();
+    expect(session.permissionMode).toBeUndefined();
+    expect(session.mcpServers).toBeUndefined();
+    expect(session.allowedPaths).toBeUndefined();
   });
 });

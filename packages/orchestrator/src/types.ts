@@ -7,6 +7,7 @@ export type {
   SessionStatus,
   ErrorCode,
   Usage,
+  RestorableSessionConfig,
   SessionRequest,
   MessageRequest,
   ForkRequest,
@@ -32,6 +33,7 @@ export type {
   ContextMessage,
   ContextStats,
   RunnerContextSnapshotMessage,
+  RunnerUtilityQueryResultMessage,
   ContextSnapshotSummary,
   ContextSnapshot,
 } from "@claude-agent-runner/shared";
@@ -46,9 +48,16 @@ export interface Session {
   branch?: string;
   workspace?: string;
   vaultName?: string;
+  agentId?: string;
   model: string;
   systemPrompt?: string;
   maxTurns?: number;
+  thinking?: boolean;
+  additionalDirectories?: string[];
+  compactInstructions?: string;
+  permissionMode?: string;
+  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  allowedPaths?: string[];
   createdAt: Date;
   lastActivity: Date;
   messageCount: number;
@@ -68,4 +77,25 @@ export interface Session {
   tenantId?: string;
   ws?: WebSocket;
   pendingResolve?: (event: RunnerEvent) => void;
+}
+
+export interface SessionCreateConfig {
+  name?: string;
+  pinned?: boolean;
+  repo?: string;
+  branch?: string;
+  workspace?: string;
+  vaultName?: string;
+  agentId?: string;
+  model: string;
+  systemPrompt?: string;
+  maxTurns?: number;
+  thinking?: boolean;
+  additionalDirectories?: string[];
+  compactInstructions?: string;
+  permissionMode?: string;
+  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  allowedPaths?: string[];
+  forkedFrom?: string;
+  tenantId?: string;
 }

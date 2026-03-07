@@ -7,6 +7,8 @@ const mockCoreApi = {
   createNamespacedPod: vi.fn().mockResolvedValue({
     metadata: { name: "runner-session-1" },
   }),
+  readNamespacedPersistentVolumeClaim: vi.fn().mockRejectedValue(new Error("not found")),
+  createNamespacedPersistentVolumeClaim: vi.fn().mockResolvedValue(undefined),
   deleteNamespacedPod: vi.fn().mockResolvedValue(undefined),
   patchNamespacedPod: vi.fn().mockResolvedValue(undefined),
 };
