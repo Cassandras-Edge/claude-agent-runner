@@ -536,118 +536,44 @@ export function createServer(ctx: AppContext): Hono {
 
   // --- Sessions: Generate Title ---
 
-  app.post("/sessions/:id/generate-title", async (c) => {
+  app.post("/sessions/:id/query", async (c) => {
     const session = ctx.sessions.get(c.req.param("id"));
     if (!session) {
       return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
     }
 
-    let body: { userMessage: string; assistantMessage?: string };
+    let body: { prompt: string; systemPrompt?: string; model?: string; maxTokens?: number };
     try {
-      body = (await c.req.json()) as { userMessage: string; assistantMessage?: string };
+      body = (await c.req.json()) as { prompt: string; systemPrompt?: string; model?: string; maxTokens?: number };
     } catch {
       return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
     }
 
-    if (!body.userMessage?.trim()) {
-      return c.json({ code: "invalid_request", message: "userMessage is required" } satisfies ErrorResponse, 400 as any);
+    if (!body.prompt?.trim()) {
+      return c.json({ code: "invalid_request", message: "prompt is required" } satisfies ErrorResponse, 400 as any);
     }
 
     try {
       const requestId = randomUUID();
-      const prompt = buildTitlePrompt(body.userMessage, body.assistantMessage);
 
       // Try to use an ephemeral runner from the pool, fall back to session's runner
       const ephemeral = ctx.warmPool?.take();
       const runnerId = ephemeral?.warmId ?? session.id;
 
-      const sent = ctx.bridge.sendUtilityQuery(runnerId, prompt, {
-        model: "haiku",
-        systemPrompt: TITLE_GENERATION_SYSTEM_PROMPT,
-        maxTokens: 60,
+      const sent = ctx.bridge.sendUtilityQuery(runnerId, body.prompt, {
+        model: body.model || "haiku",
+        systemPrompt: body.systemPrompt,
+        maxTokens: body.maxTokens,
       }, requestId);
 
       if (!sent) {
         if (ephemeral) {
           ctx.tokenPool.release(ephemeral.warmId);
           await ctx.docker.kill(ephemeral.warmId).catch(() => {});
-          const fallbackSent = ctx.bridge.sendUtilityQuery(session.id, prompt, {
-            model: "haiku",
-            systemPrompt: TITLE_GENERATION_SYSTEM_PROMPT,
-            maxTokens: 60,
-          }, requestId);
-          if (!fallbackSent) {
-            return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 500 as any);
-          }
-        } else {
-          return c.json({ code: "internal", message: "Runner not connected" } satisfies ErrorResponse, 500 as any);
-        }
-      }
-
-      const result = await ctx.bridge.waitForUtilityQueryResult(runnerId, requestId);
-
-      if (ephemeral) {
-        ctx.tokenPool.release(ephemeral.warmId);
-        ctx.docker.kill(ephemeral.warmId).catch(() => {});
-      }
-
-      if (result.error) {
-        throw new Error(result.error);
-      }
-
-      const title = parseTitle(result.text);
-      if (title) {
-        ctx.sessions.rename(session.id, title);
-        logger.info("orchestrator.api", "title_generated", { session_id: session.id, title });
-      }
-      return c.json({ title: title || session.name || "" });
-    } catch (err) {
-      logger.error("orchestrator.api", "title_generation_failed", {
-        session_id: session.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return c.json({ code: "internal", message: "Title generation failed" } satisfies ErrorResponse, 500 as any);
-    }
-  });
-
-  // --- Sessions: Suggest Folder ---
-
-  app.post("/sessions/:id/suggest-folder", async (c) => {
-    const session = ctx.sessions.get(c.req.param("id"));
-    if (!session) {
-      return c.json({ code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, 404 as any);
-    }
-
-    let body: { title: string; preview: string; folders: string[] };
-    try {
-      body = (await c.req.json()) as { title: string; preview: string; folders: string[] };
-    } catch {
-      return c.json({ code: "invalid_request", message: "Invalid JSON body" } satisfies ErrorResponse, 400 as any);
-    }
-
-    if (!body.title?.trim() && !body.preview?.trim()) {
-      return c.json({ code: "invalid_request", message: "title or preview is required" } satisfies ErrorResponse, 400 as any);
-    }
-
-    try {
-      const requestId = randomUUID();
-      const prompt = buildFolderPrompt(body.title, body.preview, body.folders);
-
-      const ephemeral = ctx.warmPool?.take();
-      const runnerId = ephemeral?.warmId ?? session.id;
-
-      const sent = ctx.bridge.sendUtilityQuery(runnerId, prompt, {
-        model: "haiku",
-        systemPrompt: FOLDER_SUGGESTION_SYSTEM_PROMPT,
-      }, requestId);
-
-      if (!sent) {
-        if (ephemeral) {
-          ctx.tokenPool.release(ephemeral.warmId);
-          await ctx.docker.kill(ephemeral.warmId).catch(() => {});
-          const fallbackSent = ctx.bridge.sendUtilityQuery(session.id, prompt, {
-            model: "haiku",
-            systemPrompt: FOLDER_SUGGESTION_SYSTEM_PROMPT,
+          const fallbackSent = ctx.bridge.sendUtilityQuery(session.id, body.prompt, {
+            model: body.model || "haiku",
+            systemPrompt: body.systemPrompt,
+            maxTokens: body.maxTokens,
           }, requestId);
           if (!fallbackSent) {
             return c.json({ code: "internal", message: "No runner available" } satisfies ErrorResponse, 500 as any);
@@ -668,20 +594,13 @@ export function createServer(ctx: AppContext): Hono {
         throw new Error(result.error);
       }
 
-      const parsed = parseFolderSuggestion(result.text);
-      logger.info("orchestrator.api", "folder_suggested", {
-        session_id: session.id,
-        type: parsed.type,
-        folderName: parsed.folderName,
-      });
-
-      return c.json(parsed);
+      return c.json({ text: result.text });
     } catch (err) {
-      logger.error("orchestrator.api", "folder_suggestion_failed", {
+      logger.error("orchestrator.api", "utility_query_failed", {
         session_id: session.id,
         error: err instanceof Error ? err.message : String(err),
       });
-      return c.json({ code: "internal", message: "Folder suggestion failed" } satisfies ErrorResponse, 500 as any);
+      return c.json({ code: "internal", message: "Utility query failed" } satisfies ErrorResponse, 500 as any);
     }
   });
 
@@ -1248,62 +1167,6 @@ async function parseSessionRequest(c: any, sessions?: SessionManager, tenantId?:
   }
 
   return body;
-}
-
-const TITLE_GENERATION_SYSTEM_PROMPT = `You are a specialist in summarizing conversations into short titles.
-Given the first user message and optionally the first assistant response, generate a concise title (3-7 words) that captures the main topic.
-Rules:
-- Be specific, not generic ("Fix React useEffect bug" not "Code help")
-- No punctuation at the end
-- No quotes around the title
-- Output ONLY the title, nothing else`;
-
-function buildTitlePrompt(userMessage: string, assistantMessage?: string): string {
-  const truncatedUser = userMessage.slice(0, 500);
-  const parts = [`User: ${truncatedUser}`];
-  if (assistantMessage) {
-    parts.push(`Assistant: ${assistantMessage.slice(0, 500)}`);
-  }
-  return parts.join("\n\n") + "\n\nGenerate a short title for this conversation:";
-}
-
-function parseTitle(text: string): string | null {
-  const cleaned = text.trim().replace(/^["']|["']$/g, "").replace(/[.!?]$/, "").trim();
-  if (!cleaned || cleaned.length < 3) return null;
-  return cleaned.slice(0, 50);
-}
-
-const FOLDER_SUGGESTION_SYSTEM_PROMPT = `You categorize conversations into folders.
-
-Given a conversation title, preview, and a list of existing folder names, decide where to place it.
-
-**Rules**:
-1. If it fits an existing folder, respond: EXISTING: <folder name>
-2. If no folder fits, suggest a new one: NEW: <short category name>
-3. New folder names should be 1-3 words, general enough to hold multiple conversations (e.g., "Code Review", "Research", "DevOps", "Data Analysis").
-4. Do NOT create overly specific folders. Prefer broad categories.
-
-**Output**: Return ONLY one line: either "EXISTING: <name>" or "NEW: <name>". Nothing else.`;
-
-function buildFolderPrompt(title: string, preview: string, folders: string[]): string {
-  const folderList = folders.length > 0
-    ? folders.map(f => `- ${f}`).join("\n")
-    : "(no existing folders)";
-  return `Title: ${title}\nPreview: ${preview}\n\nExisting folders:\n${folderList}\n\nWhich folder should this conversation go in?`;
-}
-
-function parseFolderSuggestion(text: string): { type: "existing" | "new"; folderName: string } {
-  const trimmed = text.trim();
-  const existingMatch = trimmed.match(/^EXISTING:\s*(.+)$/i);
-  if (existingMatch) {
-    return { type: "existing", folderName: existingMatch[1].trim() };
-  }
-  const newMatch = trimmed.match(/^NEW:\s*(.+)$/i);
-  if (newMatch) {
-    return { type: "new", folderName: newMatch[1].trim() };
-  }
-  // Fallback: treat as new folder name
-  return { type: "new", folderName: trimmed.substring(0, 30) };
 }
 
 async function spawnSession(ctx: AppContext, sessionId: string, body: SessionRequest, requestId?: string, tenantId?: string) {

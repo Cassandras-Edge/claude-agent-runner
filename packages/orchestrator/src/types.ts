@@ -11,7 +11,7 @@ export type {
   SessionRequest,
   MessageRequest,
   ForkRequest,
-  SessionResponse,
+  CreateSessionResponse,
   MessageResponse,
   ErrorResponse,
   SessionInfo,
