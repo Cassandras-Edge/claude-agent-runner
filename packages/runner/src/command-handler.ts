@@ -124,6 +124,15 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         const steer = state.pendingSteer;
         state.pendingSteer = null;
 
+        // Empty steer = cancel (interrupt without sending a follow-up message)
+        if (!steer.message && !steer.content) {
+          logger.info("runner.ws", "steer_cancel", { session_id: state.SESSION_ID, request_id: steer.requestId });
+          if (state.session) {
+            try { await (state.session as any).interrupt(); } catch {}
+          }
+          break;
+        }
+
         logger.info("runner.ws", "steer_executing", {
           session_id: state.SESSION_ID,
           request_id: steer.requestId,
@@ -211,6 +220,13 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         state.activeResponse.close();
       }
     } else {
+      // Empty steer while idle = no-op cancel
+      if (!steerMsg.message && !steerMsg.content) {
+        logger.info("runner.ws", "steer_cancel_idle", { session_id: state.SESSION_ID, request_id: steerRequestId });
+        sendReady(ws, steerRequestId, steerTraceId);
+        return;
+      }
+
       return runWithLogContext({ sessionId: state.SESSION_ID, requestId: steerRequestId, traceId: steerTraceId }, async () => {
         state.isBusy = true;
         sendBusy(ws, steerRequestId, steerTraceId);
