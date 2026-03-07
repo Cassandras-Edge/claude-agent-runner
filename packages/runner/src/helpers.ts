@@ -1,3 +1,7 @@
+import { COMPACT_THRESHOLD_PCT } from "./config.js";
+import { logger } from "./logger.js";
+import { state } from "./state.js";
+
 /**
  * Ring buffer that stores the last N lines of stderr output for diagnostics.
  */
@@ -41,4 +45,29 @@ export function buildZeroEventError(
     null,
     2,
   );
+}
+
+export function buildClaudeChildEnv(forceCompact = false): Record<string, string> {
+  const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (!oauthToken) {
+    logger.error("runner.config", "missing_oauth_token", { session_id: state.SESSION_ID });
+    throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process");
+  }
+
+  return {
+    CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
+    PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    HOME: "/home/runner",
+    USER: "runner",
+    SHELL: "/bin/bash",
+    LANG: "C.UTF-8",
+    TERM: "dumb",
+    CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: forceCompact ? "1" : String(COMPACT_THRESHOLD_PCT),
+    CLAUDE_MEM_SOCKET: state.MEM_SOCKET_PATH,
+  };
+}
+
+export function getJsonlPath(): string {
+  if (!state.sdkSessionId) throw new Error("SDK session ID not yet established");
+  return `/home/runner/.claude/projects/-workspace/${state.sdkSessionId}.jsonl`;
 }

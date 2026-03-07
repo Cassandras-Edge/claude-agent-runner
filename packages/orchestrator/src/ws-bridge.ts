@@ -288,7 +288,7 @@ export class WsBridge extends EventEmitter {
       ...(options?.content ? { content: options.content } : {}),
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.maxTurns ? { maxTurns: options.maxTurns } : {}),
-      ...(options?.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
+      ...(options?.maxThinkingTokens !== undefined ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       ...(options?.compact ? { compact: options.compact } : {}),
       ...(options?.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
       ...(options?.operations ? { operations: options.operations } : {}),
@@ -327,7 +327,7 @@ export class WsBridge extends EventEmitter {
       ...(options?.content ? { content: options.content } : {}),
       ...(options?.model ? { model: options.model } : {}),
       ...(options?.maxTurns ? { maxTurns: options.maxTurns } : {}),
-      ...(options?.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
+      ...(options?.maxThinkingTokens !== undefined ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       request_id: options?.requestId,
       trace_id: options?.traceId,
     }));
@@ -420,7 +420,7 @@ export class WsBridge extends EventEmitter {
     ws.send(JSON.stringify({
       type: "set_options",
       ...(options.model ? { model: options.model } : {}),
-      ...(options.maxThinkingTokens ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
+      ...(options.maxThinkingTokens !== undefined ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       ...(options.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
       ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
       request_id: options.requestId,

@@ -2,12 +2,27 @@
 
 export type Model = "haiku" | "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]";
 
-/** Content block for multimodal messages (text + images). */
+export interface McpServerConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/** Content block for multimodal messages. */
 export type UserContentBlock =
   | { type: "text"; text: string }
-  | { type: "image"; source: { type: "base64"; media_type: string; data: string } };
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: string; data: string }; title?: string };
 
-export type SessionStatus = "starting" | "cloning" | "syncing" | "ready" | "busy" | "idle" | "stopped" | "error";
+export type SessionStatus =
+  | "starting"
+  | "cloning"
+  | "syncing"
+  | "ready"
+  | "busy"
+  | "idle"
+  | "stopped"
+  | "error";
 
 export type ErrorCode =
   | "invalid_request"
@@ -28,7 +43,21 @@ export interface Usage {
   duration_ms: number;
 }
 
-// --- API Request Types ---
+export interface SessionSource {
+  type: "repo" | "workspace" | "vault" | "ephemeral";
+  repo?: string;
+  branch?: string;
+  workspace?: string;
+  vault?: string;
+}
+
+export interface SlashCommandInfo {
+  name: string;
+  description: string;
+  argumentHint: string;
+}
+
+// --- REST API Types ---
 
 export interface SessionRequest {
   name?: string;
@@ -39,7 +68,7 @@ export interface SessionRequest {
   workspace?: string;
   vault?: string;
   message?: string;
-  model?: Model;
+  model?: Model | string;
   systemPrompt?: string;
   appendSystemPrompt?: string;
   maxTurns?: number;
@@ -49,14 +78,26 @@ export interface SessionRequest {
   additionalDirectories?: string[];
   compactInstructions?: string;
   permissionMode?: string;
-  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  mcpServers?: Record<string, McpServerConfig>;
   allowedPaths?: string[];
+}
+
+export interface CreateSessionResponse {
+  session_id: string;
+  status?: SessionStatus;
+  result?: string;
+  usage?: Usage;
 }
 
 export interface MessageRequest {
   message: string;
   model?: string;
   maxTurns?: number;
+}
+
+export interface MessageResponse {
+  result: string;
+  usage: Usage;
 }
 
 export interface ForkRequest {
@@ -69,6 +110,44 @@ export interface ForkRequest {
   pinned?: boolean;
 }
 
+export interface ForkResponse {
+  session_id: string;
+  result?: string;
+  usage?: Usage;
+}
+
+export interface StopSessionResponse {
+  session_id: string;
+  status: SessionStatus;
+  total_usage: Omit<Usage, "duration_ms">;
+}
+
+export interface ResumeSessionResponse {
+  session_id: string;
+  status?: SessionStatus;
+  resumed?: boolean;
+}
+
+export interface GenerateTitleRequest {
+  userMessage: string;
+  assistantMessage?: string;
+}
+
+export interface GenerateTitleResponse {
+  title: string;
+}
+
+export interface SuggestFolderRequest {
+  title: string;
+  preview: string;
+  folders: string[];
+}
+
+export interface SuggestFolderResponse {
+  type: "existing" | "new";
+  folderName: string;
+}
+
 export interface RestorableSessionConfig {
   vaultName?: string;
   agentId?: string;
@@ -76,21 +155,8 @@ export interface RestorableSessionConfig {
   additionalDirectories?: string[];
   compactInstructions?: string;
   permissionMode?: string;
-  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  mcpServers?: Record<string, McpServerConfig>;
   allowedPaths?: string[];
-}
-
-// --- API Response Types ---
-
-export interface SessionResponse {
-  session_id: string;
-  result: string;
-  usage: Usage;
-}
-
-export interface MessageResponse {
-  result: string;
-  usage: Usage;
 }
 
 export interface ErrorResponse {
@@ -105,13 +171,7 @@ export interface SessionInfo {
   pinned?: boolean;
   agent_id?: string;
   status: SessionStatus;
-  source: {
-    type: "repo" | "workspace" | "vault" | "ephemeral";
-    repo?: string;
-    branch?: string;
-    workspace?: string;
-    vault?: string;
-  };
+  source: SessionSource;
   model: string;
   created_at: string;
   last_activity: string;
@@ -119,7 +179,7 @@ export interface SessionInfo {
 }
 
 export interface SessionDetail extends SessionInfo {
-  total_usage: Omit<Usage, "duration_ms">;
+  total_usage?: Omit<Usage, "duration_ms">;
   error?: string;
   container_id?: string;
   sdk_session_id?: string;
@@ -129,7 +189,14 @@ export interface SessionDetail extends SessionInfo {
   last_compact_at?: string;
 }
 
-// --- Context Types ---
+export interface SessionListResponse {
+  sessions: SessionInfo[];
+}
+
+export interface TranscriptResponse<TEvent = unknown> {
+  session_id: string;
+  events: TEvent[];
+}
 
 export interface ContextMessage {
   uuid: string;
@@ -146,25 +213,126 @@ export interface ContextStats {
   estimated_tokens: number;
 }
 
-// --- Runner WS Protocol ---
+export interface ContextResponse {
+  session_id: string;
+  messages: ContextMessage[];
+  stats?: ContextStats;
+  context_tokens?: number;
+  compact_count?: number;
+  last_compact_at?: string;
+}
+
+export interface ContextCompactRequest {
+  custom_instructions?: string;
+}
+
+export interface ContextCompactResponse {
+  session_id: string;
+  scheduled: boolean;
+  message: string;
+}
+
+export interface ContextInjectRequest {
+  content: string;
+  role: "user" | "system";
+  after_uuid?: string;
+}
+
+export interface ContextTruncateRequest {
+  keep_last_n: number;
+}
+
+export interface SessionUpdateRequest {
+  name?: string;
+  pinned?: boolean;
+}
+
+export interface SessionUpdateResponse {
+  session_id: string;
+  name?: string;
+  pinned?: boolean;
+}
+
+export interface HealthInfo {
+  status: "ok";
+  active_sessions: number;
+  token_pool: {
+    size: number;
+    usage: Array<{ tokenIndex: number; activeSessions: number }>;
+  };
+  uptime_ms: number;
+  runner_image: string;
+  docker_connected: boolean;
+  max_active_sessions: number | null;
+  warm_pool: unknown;
+}
+
+export interface TenantInfo {
+  id: string;
+  name: string;
+  namespace: string;
+  max_sessions: number;
+  created_at: string;
+  updated_at?: string;
+  vault?: string;
+  has_obsidian_auth?: boolean;
+  has_git_token?: boolean;
+}
+
+export interface TenantListResponse {
+  tenants: TenantInfo[];
+}
+
+export interface CreateTenantRequest {
+  id: string;
+  name: string;
+  namespace?: string;
+  max_sessions?: number;
+  vault?: string;
+  obsidian_auth_token?: string;
+  obsidian_e2ee_password?: string;
+  git_token?: string;
+}
+
+export interface CreateTenantResponse extends TenantInfo {
+  api_key: string;
+}
+
+export interface UpdateTenantRequest {
+  name?: string;
+  max_sessions?: number;
+  vault?: string | null;
+  obsidian_auth_token?: string | null;
+  obsidian_e2ee_password?: string | null;
+  git_token?: string | null;
+}
+
+export interface RotateTenantKeyResponse {
+  id: string;
+  api_key: string;
+}
+
+// --- Shared WebSocket Correlation ---
+
+export interface WsCorrelation {
+  request_id?: string;
+  trace_id?: string;
+}
+
+// --- Runner <-> Orchestrator WS Protocol ---
 
 export interface RunnerEvent {
   type: string;
   [key: string]: any;
 }
 
-interface WsCorrelation {
-  request_id?: string;
-  trace_id?: string;
-}
-
-export interface RunnerStatusMessage extends WsCorrelation {
+export interface StatusFrame extends WsCorrelation {
   type: "status";
   session_id: string;
   status: SessionStatus;
 }
 
-export interface RunnerEventMessage extends WsCorrelation {
+export interface EventFrame extends WsCorrelation {
   type: "event";
   session_id: string;
   event: RunnerEvent;
@@ -173,7 +341,8 @@ export interface RunnerEventMessage extends WsCorrelation {
 export interface RunnerErrorMessage extends WsCorrelation {
   type: "error";
   session_id: string;
-  code: string;
+  code?: string;
+  error_code?: string;
   message: string;
 }
 
@@ -183,7 +352,7 @@ export interface RunnerSessionInitMessage extends WsCorrelation {
   sdk_session_id: string;
 }
 
-export interface RunnerContextStateMessage extends WsCorrelation {
+export interface ContextStateFrame extends WsCorrelation {
   type: "context_state";
   session_id: string;
   context_tokens: number;
@@ -194,7 +363,7 @@ export interface RunnerContextResultMessage extends WsCorrelation {
   type: "context_result";
   session_id: string;
   success: boolean;
-  data?: ContextMessage[] | ContextStats | { injected_uuid: string };
+  data?: ContextMessage[] | ContextStats | { injected_uuid: string } | { injected: true } | { messages_removed: number };
   error?: string;
 }
 
@@ -207,7 +376,7 @@ export interface RunnerContextSnapshotMessage extends WsCorrelation {
   messages: any[];
 }
 
-export interface RunnerPermissionRequestMessage extends WsCorrelation {
+export interface PermissionRequestFrame extends WsCorrelation {
   type: "permission_request";
   session_id: string;
   tool_name: string;
@@ -222,41 +391,55 @@ export interface RunnerUtilityQueryResultMessage extends WsCorrelation {
   error?: string;
 }
 
+export interface CommandsResultFrame extends WsCorrelation {
+  type: "commands_result";
+  session_id: string;
+  commands: SlashCommandInfo[];
+}
+
+export interface RunnerBackgroundCompleteMessage {
+  type: "background_complete";
+  session_id: string;
+  task_id: string;
+  success: boolean;
+  error?: string;
+}
+
 export type RunnerMessage =
-  | RunnerStatusMessage
-  | RunnerEventMessage
+  | StatusFrame
+  | EventFrame
   | RunnerErrorMessage
   | RunnerSessionInitMessage
-  | RunnerContextStateMessage
+  | ContextStateFrame
   | RunnerContextResultMessage
   | RunnerContextSnapshotMessage
-  | RunnerPermissionRequestMessage
+  | PermissionRequestFrame
   | RunnerUtilityQueryResultMessage
-  | RunnerCommandsResultMessage;
+  | CommandsResultFrame
+  | RunnerBackgroundCompleteMessage;
 
-/** Orchestrator → Runner: send a message to the agent */
+/** Orchestrator -> Runner: send a message to the agent */
 export interface OrchestratorMessageCommand extends WsCorrelation {
   type: "message";
   message: string;
-  /** Multimodal content blocks (text + images). When present, overrides `message`. */
   content?: UserContentBlock[];
   model?: string;
   maxTurns?: number;
   maxThinkingTokens?: number;
 }
 
-/** Orchestrator → Runner: graceful shutdown */
+/** Orchestrator -> Runner: graceful shutdown */
 export interface OrchestratorShutdownCommand {
   type: "shutdown";
 }
 
-/** Orchestrator → Runner: trigger compaction on next query */
+/** Orchestrator -> Runner: trigger compaction on next query */
 export interface OrchestratorCompactCommand extends WsCorrelation {
   type: "compact";
   custom_instructions?: string;
 }
 
-/** Orchestrator → Runner: JSONL context manipulation */
+/** Orchestrator -> Runner: JSONL/IPC context manipulation */
 export type ContextOperation =
   | { op: "get_context" }
   | { op: "remove_message"; uuid: string }
@@ -269,57 +452,40 @@ export interface OrchestratorContextCommand extends WsCorrelation {
   operation: ContextOperation;
 }
 
-/** Orchestrator → Runner: abort current query, optionally edit JSONL, resume with a new message */
 export interface OrchestratorSteerCommand extends WsCorrelation {
   type: "steer";
-  /** Message to send as the next user turn after aborting */
   message: string;
-  /** Multimodal content blocks (text + images). When present, overrides `message`. */
   content?: UserContentBlock[];
-  /** Model override for the resumed query */
   model?: string;
-  /** Max turns for the resumed query */
   maxTurns?: number;
-  /** Max thinking tokens for the resumed query */
   maxThinkingTokens?: number;
-  /** If true, force compaction on the resume query */
   compact?: boolean;
-  /** Optional custom compact instructions for the resume */
   compact_instructions?: string;
-  /** Optional JSONL operations to execute before resuming */
   operations?: ContextOperation[];
 }
 
-/** Orchestrator → Runner: fork session, let background finish, handle new message in foreground */
 export interface OrchestratorForkAndSteerCommand extends WsCorrelation {
   type: "fork_and_steer";
-  /** Message to send as the next user turn in the forked foreground session */
   message: string;
-  /** Multimodal content blocks (text + images). When present, overrides `message`. */
   content?: UserContentBlock[];
-  /** Model override for the forked session */
   model?: string;
-  /** Max turns for the forked session */
   maxTurns?: number;
-  /** Max thinking tokens for the forked session */
   maxThinkingTokens?: number;
 }
 
-/** Orchestrator → Runner: rewind context to a specific message UUID */
 export interface OrchestratorRewindCommand extends WsCorrelation {
   type: "rewind";
   user_message_uuid: string;
 }
 
-/** Orchestrator → Runner: dynamically update session options */
 export interface OrchestratorSetOptionsCommand extends WsCorrelation {
   type: "set_options";
   model?: string;
   maxThinkingTokens?: number;
   compact_instructions?: string;
+  permission_mode?: string;
 }
 
-/** Orchestrator → Runner: respond to a permission request from canUseTool callback */
 export interface OrchestratorPermissionResponseCommand extends WsCorrelation {
   type: "permission_response";
   tool_use_id: string;
@@ -328,12 +494,10 @@ export interface OrchestratorPermissionResponseCommand extends WsCorrelation {
   updated_input?: any;
 }
 
-/** Orchestrator → Runner: request available slash commands/skills */
 export interface OrchestratorGetCommandsCommand extends WsCorrelation {
   type: "get_commands";
 }
 
-/** Orchestrator → Runner: one-shot utility query (no tools, no session persistence) */
 export interface OrchestratorUtilityQueryCommand extends WsCorrelation {
   type: "utility_query";
   prompt: string;
@@ -342,7 +506,6 @@ export interface OrchestratorUtilityQueryCommand extends WsCorrelation {
   maxTokens?: number;
 }
 
-/** Orchestrator → Runner: adopt a warm container for a real session */
 export interface OrchestratorAdoptCommand {
   type: "adopt";
   session_id: string;
@@ -361,16 +524,9 @@ export interface OrchestratorAdoptCommand {
     disallowedTools?: string[];
     compactInstructions?: string;
     permissionMode?: string;
-    mcpServers?: Record<string, { command: string; args?: string[] }>;
+    mcpServers?: Record<string, McpServerConfig>;
     allowedPaths?: string[];
   };
-}
-
-/** Runner → Orchestrator: available slash commands/skills */
-export interface RunnerCommandsResultMessage extends WsCorrelation {
-  type: "commands_result";
-  session_id: string;
-  commands: Array<{ name: string; description: string; argumentHint: string }>;
 }
 
 export type OrchestratorCommand =
@@ -387,6 +543,136 @@ export type OrchestratorCommand =
   | OrchestratorAdoptCommand
   | OrchestratorUtilityQueryCommand;
 
+// --- Client <-> Orchestrator WS Protocol ---
+
+export interface SubscribeFrame {
+  type: "subscribe";
+  session_id: string;
+  request_id?: string;
+}
+
+export interface UnsubscribeFrame {
+  type: "unsubscribe";
+  session_id: string;
+}
+
+export interface SendFrame {
+  type: "send";
+  session_id: string;
+  message: string;
+  content?: UserContentBlock[];
+  model?: string;
+  max_turns?: number;
+  max_thinking_tokens?: number;
+  request_id?: string;
+}
+
+export interface SteerFrame {
+  type: "steer";
+  session_id: string;
+  message: string;
+  content?: UserContentBlock[];
+  mode?: "steer" | "fork_and_steer";
+  model?: string;
+  max_turns?: number;
+  max_thinking_tokens?: number;
+  compact?: boolean;
+  compact_instructions?: string;
+  operations?: ContextOperation[];
+  request_id?: string;
+}
+
+export interface CompactFrame {
+  type: "compact";
+  session_id: string;
+  custom_instructions?: string;
+  request_id?: string;
+}
+
+export interface PermissionResponseFrame extends WsCorrelation {
+  type: "permission_response";
+  session_id: string;
+  tool_use_id: string;
+  behavior: "allow" | "deny" | "allowWithModification";
+  message?: string;
+  updated_input?: any;
+}
+
+export interface RewindFrame {
+  type: "rewind";
+  session_id: string;
+  user_message_uuid: string;
+  request_id?: string;
+}
+
+export interface SetOptionsFrame {
+  type: "set_options";
+  session_id: string;
+  model?: string;
+  max_thinking_tokens?: number;
+  compact_instructions?: string;
+  permission_mode?: string;
+  request_id?: string;
+}
+
+export interface GetCommandsFrame {
+  type: "get_commands";
+  session_id: string;
+  request_id?: string;
+}
+
+export interface PingFrame {
+  type: "ping";
+}
+
+export type ClientFrame =
+  | SubscribeFrame
+  | UnsubscribeFrame
+  | SendFrame
+  | SteerFrame
+  | CompactFrame
+  | PermissionResponseFrame
+  | RewindFrame
+  | SetOptionsFrame
+  | GetCommandsFrame
+  | PingFrame;
+
+export interface AckFrame {
+  type: "ack";
+  session_id: string;
+  ok: boolean;
+  error?: string;
+  request_id?: string;
+}
+
+export interface ErrorFrame extends WsCorrelation {
+  type: "error";
+  session_id?: string;
+  error_code?: string;
+  message?: string;
+}
+
+export interface SubscribedFrame extends WsCorrelation {
+  type: "subscribed";
+  session_id: string;
+  status?: SessionStatus;
+}
+
+export interface PongFrame {
+  type: "pong";
+}
+
+export type ServerFrame =
+  | AckFrame
+  | StatusFrame
+  | EventFrame
+  | ContextStateFrame
+  | PermissionRequestFrame
+  | CommandsResultFrame
+  | ErrorFrame
+  | SubscribedFrame
+  | PongFrame;
+
 // --- Context Snapshot Types ---
 
 export interface ContextSnapshotSummary {
@@ -402,3 +688,12 @@ export interface ContextSnapshotSummary {
 export interface ContextSnapshot extends ContextSnapshotSummary {
   messages: any[];
 }
+
+// --- Compatibility Aliases ---
+
+export type RunnerStatusMessage = StatusFrame;
+export type RunnerEventMessage = EventFrame;
+export type RunnerErrorFrame = ErrorFrame;
+export type RunnerContextStateMessage = ContextStateFrame;
+export type RunnerPermissionRequestMessage = PermissionRequestFrame;
+export type RunnerCommandsResultMessage = CommandsResultFrame;

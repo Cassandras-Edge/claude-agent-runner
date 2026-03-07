@@ -1,5 +1,5 @@
 import type WebSocket from "ws";
-import type { SessionStatus, RunnerEvent } from "@claude-agent-runner/shared";
+import type { SessionStatus, RunnerEvent } from "@bugcat/claude-agent-runner-shared";
 
 // Re-export everything from shared so existing imports from "./types.js" keep working
 export type {
@@ -36,7 +36,7 @@ export type {
   RunnerUtilityQueryResultMessage,
   ContextSnapshotSummary,
   ContextSnapshot,
-} from "@claude-agent-runner/shared";
+} from "@bugcat/claude-agent-runner-shared";
 
 // --- Internal Session State (orchestrator-only) ---
 

@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: Claude Agent Runner
-  description: Docker-isolated Claude Code agent runtime and orchestrator
-  version: 2.0.0
+  description: REST API for the claude-agent-runner orchestrator
+  version: 2.1.0
 
 servers:
   - url: http://localhost:9080
@@ -12,119 +12,66 @@ paths:
   /health:
     get:
       operationId: getHealth
-      summary: Health check
+      summary: Get orchestrator health
       responses:
         "200":
-          description: Service health status
+          description: Health information
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthInfo"
 
-  /vaults:
+  /metrics:
     get:
-      operationId: listVaults
-      summary: List active vault sync volumes
+      operationId: getMetrics
+      summary: Get Prometheus metrics
       responses:
         "200":
-          description: Active vault syncs with volume and sidecar status
+          description: Prometheus exposition format
           content:
-            application/json:
+            text/plain:
               schema:
-                type: object
-                required: [vaults]
-                properties:
-                  vaults:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        session_id:
-                          type: string
-                        vault_name:
-                          type: string
-                        volume:
-                          type: string
-                        has_sidecar:
-                          type: boolean
+                type: string
 
   /sessions:
     get:
       operationId: listSessions
-      summary: List all sessions
+      summary: List sessions
       responses:
         "200":
-          description: List of session summaries
+          description: Sessions
           content:
             application/json:
               schema:
-                type: object
-                required: [sessions]
-                properties:
-                  sessions:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/SessionSummary"
-
+                $ref: "#/components/schemas/SessionListResponse"
     post:
       operationId: createSession
-      summary: Create a session with optional blocking run
+      summary: Create a session, optionally sending the first message
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateSessionRequest"
+              $ref: "#/components/schemas/SessionRequest"
       responses:
         "200":
-          description: Session created (with result if message provided)
+          description: Session created
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SessionResult"
+                $ref: "#/components/schemas/CreateSessionResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "409":
           $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/CapacityReached"
         "500":
           $ref: "#/components/responses/ServerError"
-
-  /sessions/stream:
-    post:
-      operationId: createSessionStream
-      summary: Create a session with SSE streaming
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateSessionRequest"
-      responses:
-        "200":
-          description: SSE event stream
-          content:
-            text/event-stream:
-              schema:
-                description: |
-                  Server-Sent Events stream. Event types:
-                  - `session` — status updates (`{ session_id, status }`)
-                  - `assistant` — assistant text (`{ type, content }`)
-                  - `tool` — tool use (`{ type, tool_name, tool_input }`)
-                  - `tool_result` — tool result (`{ type, tool_name, output }`)
-                  - `tool_progress` — tool progress updates
-                  - `thinking` — extended thinking content
-                  - `result` — final result (`{ type, subtype, result, usage, errors }`)
-                  - `error` — error (`{ code, message, session_id }`)
-                type: string
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "409":
-          $ref: "#/components/responses/Conflict"
 
   /sessions/{session_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     get:
       operationId: getSession
       summary: Get session detail
@@ -137,126 +84,122 @@ paths:
                 $ref: "#/components/schemas/SessionDetail"
         "404":
           $ref: "#/components/responses/NotFound"
-
     patch:
       operationId: updateSession
-      summary: Rename a session or update pinned status
+      summary: Update session name and pin state
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  description: New display name (must be unique)
-                pinned:
-                  type: boolean
-                  description: Pin or unpin session to control idle timeout cleanup
+              $ref: "#/components/schemas/SessionUpdateRequest"
       responses:
         "200":
           description: Session updated
           content:
             application/json:
               schema:
-                type: object
-                required: [session_id]
-                properties:
-                  session_id:
-                    type: string
-                    format: uuid
-                  name:
-                    type: string
-                  pinned:
-                    type: boolean
+                $ref: "#/components/schemas/SessionUpdateResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-
     delete:
       operationId: deleteSession
       summary: Stop and remove a session
       responses:
         "200":
-          description: Session stopped and removed
+          description: Session removed
           content:
             application/json:
               schema:
-                type: object
-                required: [session_id, status]
-                properties:
-                  session_id:
-                    type: string
-                    format: uuid
-                  status:
-                    type: string
-                    enum: [stopped]
-                  total_usage:
-                    $ref: "#/components/schemas/UsageTotals"
+                $ref: "#/components/schemas/StopSessionResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /sessions/{session_id}/stop:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: stopSession
+      summary: Stop a session without deleting metadata
+      responses:
+        "200":
+          description: Session stopped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StopSessionResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /sessions/{session_id}/resume:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: resumeSession
+      summary: Resume a stopped session
+      responses:
+        "200":
+          description: Session resumed or already active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResumeSessionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
 
   /sessions/{session_id}/transcript:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     get:
       operationId: getTranscript
-      summary: Get session transcript
+      summary: Get transcript
       parameters:
         - name: format
           in: query
+          required: false
           schema:
             type: string
             enum: [json]
-          description: Set to `json` for parsed JSON array. Omit for raw JSONL.
       responses:
         "200":
-          description: Transcript data
+          description: Transcript JSON or raw JSONL
           content:
             application/json:
               schema:
-                type: object
-                required: [session_id, events]
-                properties:
-                  session_id:
-                    type: string
-                    format: uuid
-                  events:
-                    type: array
-                    items:
-                      type: object
+                $ref: "#/components/schemas/TranscriptResponse"
             application/x-ndjson:
               schema:
                 type: string
-                description: Raw JSONL transcript lines
         "404":
           $ref: "#/components/responses/NotFound"
 
   /sessions/{session_id}/messages:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     post:
       operationId: sendMessage
-      summary: Send a follow-up message (blocking)
+      summary: Send a blocking follow-up message
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SendMessageRequest"
+              $ref: "#/components/schemas/MessageRequest"
       responses:
         "200":
-          description: Agent response
+          description: Assistant response
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResult"
+                $ref: "#/components/schemas/MessageResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -268,216 +211,171 @@ paths:
         "500":
           $ref: "#/components/responses/ServerError"
 
-  /sessions/{session_id}/messages/stream:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-
-    post:
-      operationId: sendMessageStream
-      summary: Send a follow-up message with SSE streaming
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SendMessageRequest"
-      responses:
-        "200":
-          description: SSE event stream (same event types as POST /sessions/stream)
-          content:
-            text/event-stream:
-              schema:
-                type: string
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/SessionBusy"
-        "410":
-          $ref: "#/components/responses/SessionStopped"
-
   /sessions/{session_id}/fork:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     post:
       operationId: forkSession
-      summary: Fork a session from its SDK state
+      summary: Fork a session from persisted SDK state
       requestBody:
+        required: false
         content:
           application/json:
             schema:
               $ref: "#/components/schemas/ForkRequest"
       responses:
         "200":
-          description: Forked session (with result if message provided)
+          description: Forked session
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ForkResult"
+                $ref: "#/components/schemas/ForkResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/CapacityReached"
         "500":
           $ref: "#/components/responses/ServerError"
 
   /sessions/{session_id}/context:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     get:
       operationId: getContext
-      summary: Get live conversation context
-      description: |
-        Returns the current in-memory conversation context from the runner process.
-        Requires the runner container to be connected and healthy.
+      summary: Get current runner context
       responses:
         "200":
-          description: Current conversation context
+          description: Live context
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContextOperationResult"
+                $ref: "#/components/schemas/ContextResponse"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/SessionBusy"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
         "503":
-          $ref: "#/components/responses/RunnerNotConnected"
-
-  /sessions/{session_id}/context/inject:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-
-    post:
-      operationId: injectContextMessage
-      summary: Inject a message into the conversation context
-      description: |
-        Inserts a synthetic message into the live conversation context at a specified
-        position. Requires the runner container to be connected and healthy.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/InjectMessageRequest"
-      responses:
-        "200":
-          description: Message injected successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContextOperationResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "503":
-          $ref: "#/components/responses/RunnerNotConnected"
-
-  /sessions/{session_id}/context/messages/{uuid}:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-      - name: uuid
-        in: path
-        required: true
-        description: UUID of the context message to remove
-        schema:
-          type: string
-          format: uuid
-
-    delete:
-      operationId: removeContextMessage
-      summary: Remove a message from the conversation context by UUID
-      description: |
-        Deletes a specific message from the live conversation context.
-        Requires the runner container to be connected and healthy.
-      responses:
-        "200":
-          description: Message removed successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContextOperationResult"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "503":
-          $ref: "#/components/responses/RunnerNotConnected"
-
-  /sessions/{session_id}/context/truncate:
-    parameters:
-      - $ref: "#/components/parameters/SessionId"
-
-    post:
-      operationId: truncateContext
-      summary: Truncate the conversation context to the last N turns
-      description: |
-        Removes older messages from the context, keeping only the most recent turns.
-        Requires the runner container to be connected and healthy.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/TruncateContextRequest"
-      responses:
-        "200":
-          description: Context truncated successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ContextOperationResult"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "503":
-          $ref: "#/components/responses/RunnerNotConnected"
+          $ref: "#/components/responses/RunnerUnavailable"
 
   /sessions/{session_id}/context/compact:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     post:
-      operationId: compactContext
-      summary: Schedule context compaction
-      description: |
-        Triggers a compaction of the conversation context, summarising older turns
-        to reduce token usage. Requires the runner container to be connected and healthy.
+      operationId: scheduleCompaction
+      summary: Schedule context compaction on the next query
       requestBody:
+        required: false
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CompactContextRequest"
+              $ref: "#/components/schemas/ContextCompactRequest"
       responses:
         "200":
-          description: Compaction scheduled successfully
+          description: Compaction scheduled
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ContextOperationResult"
+                $ref: "#/components/schemas/ContextCompactResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
+        "503":
+          $ref: "#/components/responses/RunnerUnavailable"
+
+  /sessions/{session_id}/context/inject:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: injectContextMessage
+      summary: Inject a synthetic context message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContextInjectRequest"
+      responses:
+        "200":
+          description: Inject result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextMutationResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/SessionBusy"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
         "503":
-          $ref: "#/components/responses/RunnerNotConnected"
+          $ref: "#/components/responses/RunnerUnavailable"
+
+  /sessions/{session_id}/context/messages/{uuid}:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+      - $ref: "#/components/parameters/ContextMessageUuid"
+    delete:
+      operationId: removeContextMessage
+      summary: Remove a context message by UUID
+      responses:
+        "200":
+          description: Remove result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextMutationResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/SessionBusy"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
+        "503":
+          $ref: "#/components/responses/RunnerUnavailable"
+
+  /sessions/{session_id}/context/truncate:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: truncateContext
+      summary: Truncate context to the last N turns
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ContextTruncateRequest"
+      responses:
+        "200":
+          description: Truncate result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ContextMutationResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/SessionBusy"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
+        "503":
+          $ref: "#/components/responses/RunnerUnavailable"
 
   /sessions/{session_id}/context/steer:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     post:
       operationId: steerSession
-      summary: Steer or fork-and-steer an active session
-      description: |
-        Interrupts the current session stream and redirects it with a new message and
-        optional context surgery operations. When `mode` is `fork_and_steer` the
-        original session drains in the background while the user's message is sent to
-        a newly-forked SDK session in the foreground.
-
-        Works whether the session is currently busy or idle. Requires the runner
-        container to be connected and healthy (returns 503 otherwise).
+      summary: Steer or fork-and-steer a running session
       requestBody:
         required: true
         content:
@@ -490,52 +388,34 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SteerResult"
+                $ref: "#/components/schemas/SteerResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
         "503":
-          $ref: "#/components/responses/RunnerNotConnected"
+          $ref: "#/components/responses/RunnerUnavailable"
 
   /sessions/{session_id}/snapshots:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-
     get:
       operationId: listSnapshots
       summary: List context snapshots for a session
-      description: |
-        Returns metadata for all context snapshots associated with this session.
-        Snapshots are taken automatically on steer, compact, turn_complete events,
-        or can be triggered manually. Requires the runner to be connected.
       responses:
         "200":
-          description: List of snapshots
+          description: Snapshot list
           content:
             application/json:
               schema:
-                type: object
-                required: [session_id, snapshots]
-                properties:
-                  session_id:
-                    type: string
-                    format: uuid
-                  snapshots:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/SnapshotSummary"
+                $ref: "#/components/schemas/SnapshotListResponse"
         "404":
           $ref: "#/components/responses/NotFound"
-        "503":
-          $ref: "#/components/responses/RunnerNotConnected"
-
     post:
       operationId: createSnapshot
-      summary: Trigger a manual context snapshot
-      description: |
-        Forces an immediate snapshot of the current conversation context.
-        Requires the runner container to be connected and healthy.
+      summary: Create a manual context snapshot
       responses:
         "200":
           description: Snapshot created
@@ -545,36 +425,179 @@ paths:
                 $ref: "#/components/schemas/SnapshotDetail"
         "404":
           $ref: "#/components/responses/NotFound"
+        "410":
+          $ref: "#/components/responses/SessionStopped"
         "503":
-          $ref: "#/components/responses/RunnerNotConnected"
+          $ref: "#/components/responses/RunnerUnavailable"
 
   /sessions/{session_id}/snapshots/{snapshot_id}:
     parameters:
       - $ref: "#/components/parameters/SessionId"
-      - name: snapshot_id
-        in: path
-        required: true
-        description: Snapshot identifier
-        schema:
-          type: string
-
+      - $ref: "#/components/parameters/SnapshotId"
     get:
       operationId: getSnapshot
-      summary: Get a context snapshot with full message list
-      description: |
-        Returns the snapshot metadata together with the full messages captured at
-        snapshot time. Requires the runner container to be connected and healthy.
+      summary: Get a snapshot with full message payloads
       responses:
         "200":
-          description: Snapshot with messages
+          description: Snapshot
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SnapshotDetail"
         "404":
           $ref: "#/components/responses/NotFound"
-        "503":
-          $ref: "#/components/responses/RunnerNotConnected"
+
+  /sessions/{session_id}/generate-title:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: generateTitle
+      summary: Generate a short title using a warm Haiku runner
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateTitleRequest"
+      responses:
+        "200":
+          description: Title generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GenerateTitleResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /sessions/{session_id}/suggest-folder:
+    parameters:
+      - $ref: "#/components/parameters/SessionId"
+    post:
+      operationId: suggestFolder
+      summary: Suggest an existing or new folder for a note
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SuggestFolderRequest"
+      responses:
+        "200":
+          description: Folder suggestion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestFolderResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/ServerError"
+
+  /tenants:
+    get:
+      operationId: listTenants
+      summary: List tenants
+      responses:
+        "200":
+          description: Tenants
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantListResponse"
+    post:
+      operationId: createTenant
+      summary: Create a tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Tenant created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTenantResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /tenants/{tenant_id}:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    get:
+      operationId: getTenant
+      summary: Get tenant detail
+      responses:
+        "200":
+          description: Tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantInfo"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateTenant
+      summary: Update tenant settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantRequest"
+      responses:
+        "200":
+          description: Tenant updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantUpdateResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteTenant
+      summary: Delete a tenant
+      responses:
+        "200":
+          description: Tenant deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /tenants/{tenant_id}/rotate-key:
+    parameters:
+      - $ref: "#/components/parameters/TenantId"
+    post:
+      operationId: rotateTenantKey
+      summary: Rotate a tenant API key
+      responses:
+        "200":
+          description: New API key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RotateTenantKeyResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
 
 components:
   parameters:
@@ -585,16 +608,33 @@ components:
       schema:
         type: string
         format: uuid
+    SnapshotId:
+      name: snapshot_id
+      in: path
+      required: true
+      schema:
+        type: integer
+    ContextMessageUuid:
+      name: uuid
+      in: path
+      required: true
+      schema:
+        type: string
+    TenantId:
+      name: tenant_id
+      in: path
+      required: true
+      schema:
+        type: string
 
   schemas:
     Model:
       type: string
-      enum: [haiku, sonnet, opus]
-      default: sonnet
+      enum: [haiku, sonnet, "sonnet[1m]", opus, "opus[1m]"]
 
     SessionStatus:
       type: string
-      enum: [starting, cloning, ready, busy, idle, stopped, error]
+      enum: [starting, cloning, syncing, ready, busy, idle, stopped, error]
 
     ErrorCode:
       type: string
@@ -608,7 +648,6 @@ components:
         - session_not_found
         - session_busy
         - session_stopped
-        - runner_not_connected
         - internal
 
     Usage:
@@ -641,15 +680,155 @@ components:
       properties:
         type:
           type: string
-          enum: [repo, workspace, ephemeral]
+          enum: [repo, workspace, vault, ephemeral]
         repo:
           type: string
         branch:
           type: string
         workspace:
           type: string
+        vault:
+          type: string
 
-    SessionSummary:
+    McpServerConfig:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+
+    SessionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        pinned:
+          type: boolean
+        agentId:
+          type: string
+        repo:
+          type: string
+        branch:
+          type: string
+        workspace:
+          type: string
+        vault:
+          type: string
+        message:
+          type: string
+        model:
+          $ref: "#/components/schemas/Model"
+        systemPrompt:
+          type: string
+        appendSystemPrompt:
+          type: string
+        maxTurns:
+          type: integer
+        thinking:
+          type: boolean
+        allowedTools:
+          type: array
+          items:
+            type: string
+        disallowedTools:
+          type: array
+          items:
+            type: string
+        additionalDirectories:
+          type: array
+          items:
+            type: string
+        compactInstructions:
+          type: string
+        permissionMode:
+          type: string
+        mcpServers:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/McpServerConfig"
+        allowedPaths:
+          type: array
+          items:
+            type: string
+
+    CreateSessionResponse:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        result:
+          type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    MessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+        model:
+          type: string
+        maxTurns:
+          type: integer
+
+    MessageResponse:
+      type: object
+      required: [result, usage]
+      properties:
+        result:
+          type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    ForkRequest:
+      type: object
+      properties:
+        resumeAt:
+          type: string
+        message:
+          type: string
+        model:
+          type: string
+        systemPrompt:
+          type: string
+        appendSystemPrompt:
+          type: string
+        maxTurns:
+          type: integer
+        pinned:
+          type: boolean
+
+    ForkResponse:
+      type: object
+      required: [session_id]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        forked_from:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        result:
+          type: string
+        usage:
+          $ref: "#/components/schemas/Usage"
+
+    SessionInfo:
       type: object
       required: [session_id, status, source, model, created_at, last_activity, message_count]
       properties:
@@ -660,6 +839,8 @@ components:
           type: string
         pinned:
           type: boolean
+        agent_id:
+          type: string
         status:
           $ref: "#/components/schemas/SessionStatus"
         source:
@@ -677,7 +858,7 @@ components:
 
     SessionDetail:
       allOf:
-        - $ref: "#/components/schemas/SessionSummary"
+        - $ref: "#/components/schemas/SessionInfo"
         - type: object
           properties:
             total_usage:
@@ -691,111 +872,56 @@ components:
             forked_from:
               type: string
               format: uuid
+            context_tokens:
+              type: integer
+            compact_count:
+              type: integer
+            last_compact_at:
+              type: string
+              format: date-time
 
-    CreateSessionRequest:
+    SessionListResponse:
+      type: object
+      required: [sessions]
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionInfo"
+
+    SessionUpdateRequest:
       type: object
       properties:
         name:
           type: string
-          description: Optional display name (must be unique)
         pinned:
           type: boolean
-          description: Pin session to prevent idle timeout cleanup
-        repo:
-          type: string
-          description: Git repo URL to clone
-        branch:
-          type: string
-          description: Git branch (used with repo)
-        workspace:
-          type: string
-          description: Host path to mount instead of cloning
-        message:
-          type: string
-          description: Optional first message to send after session is ready
-        model:
-          $ref: "#/components/schemas/Model"
-        systemPrompt:
-          type: string
-        appendSystemPrompt:
-          type: string
-        maxTurns:
-          type: integer
-        thinking:
-          type: boolean
-          description: Enable extended thinking (10k budget tokens)
-        allowedTools:
-          type: array
-          items:
-            type: string
-        disallowedTools:
-          type: array
-          items:
-            type: string
-        additionalDirectories:
-          type: array
-          items:
-            type: string
-        compactInstructions:
-          type: string
-          description: PreCompact hook instructions
-        permissionMode:
-          type: string
-          description: Permission mode (e.g. "bypassPermissions")
-        mcpServers:
-          type: object
-          description: MCP servers to inject into the session
-          additionalProperties:
-            type: object
-            properties:
-              command:
-                type: string
-              args:
-                type: array
-                items:
-                  type: string
-        allowedPaths:
-          type: array
-          items:
-            type: string
-          description: Restrict file operations to these paths
-        vault:
-          type: string
-          description: Obsidian vault name (spawns a vault sync sidecar)
 
-    SendMessageRequest:
+    SessionUpdateResponse:
       type: object
-      required: [message]
+      required: [session_id]
       properties:
-        message:
+        session_id:
           type: string
-        model:
+          format: uuid
+        name:
           type: string
-        maxTurns:
-          type: integer
-
-    ForkRequest:
-      type: object
-      properties:
-        resumeAt:
-          type: string
-          description: SDK turn ID to resume from
-        message:
-          type: string
-          description: Optional message to send immediately after fork
-        model:
-          type: string
-        systemPrompt:
-          type: string
-        appendSystemPrompt:
-          type: string
-        maxTurns:
-          type: integer
         pinned:
           type: boolean
-          description: Pin forked session to prevent idle timeout cleanup
 
-    SessionResult:
+    StopSessionResponse:
+      type: object
+      required: [session_id, status, total_usage]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/SessionStatus"
+        total_usage:
+          $ref: "#/components/schemas/UsageTotals"
+
+    ResumeSessionResponse:
       type: object
       required: [session_id]
       properties:
@@ -803,184 +929,167 @@ components:
           type: string
           format: uuid
         status:
-          type: string
-        result:
-          type: string
-        usage:
-          $ref: "#/components/schemas/Usage"
+          $ref: "#/components/schemas/SessionStatus"
+        resumed:
+          type: boolean
 
-    MessageResult:
+    TranscriptResponse:
       type: object
-      required: [result, usage]
-      properties:
-        result:
-          type: string
-        usage:
-          $ref: "#/components/schemas/Usage"
-
-    ForkResult:
-      type: object
-      required: [session_id, forked_from]
+      required: [session_id, events]
       properties:
         session_id:
           type: string
           format: uuid
-        forked_from:
+        events:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+
+    ContextMessage:
+      type: object
+      required: [uuid, parentUuid, type, content]
+      properties:
+        uuid:
+          type: string
+        parentUuid:
+          type: [string, "null"]
+        type:
+          type: string
+          enum: [user, assistant, system]
+        content:
+          description: Raw SDK message payload
+        timestamp:
+          type: string
+
+    ContextStats:
+      type: object
+      required: [message_count, turn_count, type_breakdown, estimated_tokens]
+      properties:
+        message_count:
+          type: integer
+        turn_count:
+          type: integer
+        type_breakdown:
+          type: object
+          additionalProperties:
+            type: integer
+        estimated_tokens:
+          type: integer
+
+    ContextResponse:
+      type: object
+      required: [session_id, messages]
+      properties:
+        session_id:
           type: string
           format: uuid
-        status:
-          type: string
-        result:
-          type: string
-        usage:
-          $ref: "#/components/schemas/Usage"
-
-    HealthInfo:
-      type: object
-      required: [status, active_sessions, token_pool, uptime_ms, runner_image, docker_connected]
-      properties:
-        status:
-          type: string
-        active_sessions:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/ContextMessage"
+        stats:
+          $ref: "#/components/schemas/ContextStats"
+        context_tokens:
           type: integer
-        token_pool:
-          type: object
-          properties:
-            size:
-              type: integer
-            usage:
-              type: object
-              additionalProperties:
-                type: integer
-        uptime_ms:
-          type: number
-        runner_image:
+        compact_count:
+          type: integer
+        last_compact_at:
           type: string
-        docker_connected:
+          format: date-time
+
+    ContextCompactRequest:
+      type: object
+      properties:
+        custom_instructions:
+          type: string
+
+    ContextCompactResponse:
+      type: object
+      required: [session_id, scheduled, message]
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        scheduled:
           type: boolean
-        max_active_sessions:
-          type: integer
-          nullable: true
-        warm_pool:
-          type: object
-          nullable: true
-          properties:
-            target:
-              type: integer
-            total:
-              type: integer
-            ready:
-              type: integer
-            spawning:
-              type: integer
-
-    ErrorResponse:
-      type: object
-      required: [code, message]
-      properties:
-        code:
-          $ref: "#/components/schemas/ErrorCode"
         message:
           type: string
-        session_id:
-          type: string
-          format: uuid
 
-    # -------------------------------------------------------------------------
-    # Context management schemas
-    # -------------------------------------------------------------------------
-
-    ContextOperationResult:
+    ContextInjectRequest:
       type: object
-      required: [success]
-      properties:
-        success:
-          type: boolean
-        data:
-          description: Operation-specific payload (e.g. full context messages on GET)
-        error:
-          type: string
-          description: Human-readable error detail when success is false
-
-    InjectMessageRequest:
-      type: object
-      required: [content]
+      required: [content, role]
       properties:
         content:
           type: string
-          description: Text content to inject
         role:
           type: string
-          enum: [user, assistant]
-          default: user
-          description: Role to assign the injected message
+          enum: [user, system]
         after_uuid:
           type: string
-          format: uuid
-          description: |
-            UUID of an existing message after which to insert the new message.
-            If omitted the message is appended at the end of the context.
 
-    TruncateContextRequest:
+    ContextTruncateRequest:
       type: object
       required: [keep_last_n]
       properties:
         keep_last_n:
           type: integer
           minimum: 1
-          description: Number of most-recent turns to retain
 
-    CompactContextRequest:
+    ContextMutationResponse:
       type: object
+      required: [session_id]
       properties:
-        custom_instructions:
+        session_id:
           type: string
-          description: |
-            Optional instructions passed to the compaction model to guide the
-            summary (e.g. "Focus on code changes, ignore chit-chat").
+          format: uuid
+        injected_uuid:
+          type: string
+        removed_uuid:
+          type: string
+        truncated:
+          type: boolean
+        kept_turns:
+          type: integer
 
     ContextOperation:
-      description: |
-        A single context mutation to apply atomically as part of a steer request.
-        Exactly one of the three operation shapes must be provided.
       oneOf:
+        - type: object
+          required: [op]
+          properties:
+            op:
+              const: get_context
+        - type: object
+          required: [op]
+          properties:
+            op:
+              const: get_stats
         - type: object
           required: [op, uuid]
           properties:
             op:
-              type: string
-              enum: [remove_message]
+              const: remove_message
             uuid:
               type: string
-              format: uuid
-              description: UUID of the message to remove
         - type: object
-          required: [op, content]
+          required: [op, content, role]
           properties:
             op:
-              type: string
-              enum: [inject_message]
+              const: inject_message
             content:
               type: string
-              description: Text content to inject
             role:
               type: string
-              enum: [user, assistant]
-              default: user
+              enum: [user, system]
             after_uuid:
               type: string
-              format: uuid
-              description: Insert after this message UUID; appends if omitted
         - type: object
           required: [op, keep_last_n]
           properties:
             op:
-              type: string
-              enum: [truncate]
+              const: truncate
             keep_last_n:
               type: integer
-              minimum: 1
-              description: Number of most-recent turns to retain
 
     SteerRequest:
       type: object
@@ -988,89 +1097,57 @@ components:
       properties:
         message:
           type: string
-          description: The new user message to send after steering
         mode:
           type: string
           enum: [steer, fork_and_steer]
-          default: steer
-          description: |
-            `steer` — interrupt and redirect the current SDK session.
-            `fork_and_steer` — let the original session drain in the background
-            while the message is sent to a freshly-forked SDK session in the
-            foreground, then merge the background result back.
         model:
           type: string
-          description: Override the model used for the steered turn
         maxTurns:
           type: integer
-          description: Override the maximum number of agent turns
         compact:
           type: boolean
-          description: |
-            If true, schedule a context compaction immediately before steering
         compact_instructions:
           type: string
-          description: Custom instructions for compaction (used when compact is true)
         operations:
           type: array
           items:
             $ref: "#/components/schemas/ContextOperation"
-          description: |
-            Ordered list of context surgery operations to apply before sending
-            the steering message. Applied atomically before the new turn begins.
 
-    SteerResult:
+    SteerResponse:
       type: object
-      required: [session_id, status]
+      required: [session_id, steered, mode, was_busy]
       properties:
         session_id:
           type: string
           format: uuid
-          description: |
-            For `steer` mode: the same session_id that was steered.
-            For `fork_and_steer` mode: the newly-forked session_id.
-        status:
+        steered:
+          type: boolean
+        mode:
           type: string
-          enum: [steering, forking]
-          description: |
-            `steering` — the session is being redirected in-place.
-            `forking` — a fork has been initiated; the original session drains
-            in the background.
-
-    # -------------------------------------------------------------------------
-    # Snapshot schemas
-    # -------------------------------------------------------------------------
-
-    SnapshotTrigger:
-      type: string
-      enum: [steer, compact, turn_complete, manual]
-      description: |
-        What caused the snapshot to be taken:
-        - `steer` — taken before a steer or fork-and-steer operation
-        - `compact` — taken before context compaction
-        - `turn_complete` — taken automatically at the end of an agent turn
-        - `manual` — triggered explicitly via POST /snapshots
+          enum: [steer, fork_and_steer]
+        was_busy:
+          type: boolean
 
     SnapshotSummary:
       type: object
       required: [id, session_id, trigger, message_count, roles, created_at]
       properties:
         id:
-          type: string
-          description: Unique snapshot identifier
+          type: integer
         session_id:
           type: string
           format: uuid
+        request_id:
+          type: string
         trigger:
-          $ref: "#/components/schemas/SnapshotTrigger"
+          type: string
+          enum: [steer, compact, turn_complete, manual]
         message_count:
           type: integer
-          description: Number of messages captured in the snapshot
         roles:
           type: array
           items:
             type: string
-          description: Distinct roles present in the snapshot messages (e.g. ["user", "assistant"])
         created_at:
           type: string
           format: date-time
@@ -1085,7 +1162,202 @@ components:
               type: array
               items:
                 type: object
-              description: Full message objects captured at snapshot time
+                additionalProperties: true
+
+    SnapshotListResponse:
+      type: object
+      required: [snapshots]
+      properties:
+        snapshots:
+          type: array
+          items:
+            $ref: "#/components/schemas/SnapshotSummary"
+
+    GenerateTitleRequest:
+      type: object
+      required: [userMessage]
+      properties:
+        userMessage:
+          type: string
+        assistantMessage:
+          type: string
+
+    GenerateTitleResponse:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+
+    SuggestFolderRequest:
+      type: object
+      required: [title, preview, folders]
+      properties:
+        title:
+          type: string
+        preview:
+          type: string
+        folders:
+          type: array
+          items:
+            type: string
+
+    SuggestFolderResponse:
+      type: object
+      required: [type, folderName]
+      properties:
+        type:
+          type: string
+          enum: [existing, new]
+        folderName:
+          type: string
+
+    HealthInfo:
+      type: object
+      required: [status, active_sessions, token_pool, uptime_ms, runner_image, docker_connected, max_active_sessions]
+      properties:
+        status:
+          const: ok
+        active_sessions:
+          type: integer
+        token_pool:
+          type: object
+          required: [size, usage]
+          properties:
+            size:
+              type: integer
+            usage:
+              type: array
+              items:
+                type: object
+                required: [tokenIndex, activeSessions]
+                properties:
+                  tokenIndex:
+                    type: integer
+                  activeSessions:
+                    type: integer
+        uptime_ms:
+          type: integer
+        runner_image:
+          type: string
+        docker_connected:
+          type: boolean
+        max_active_sessions:
+          type: [integer, "null"]
+        warm_pool:
+          description: Warm pool stats when enabled
+
+    TenantInfo:
+      type: object
+      required: [id, name, namespace, max_sessions, created_at]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        namespace:
+          type: string
+        max_sessions:
+          type: integer
+        vault:
+          type: string
+        has_obsidian_auth:
+          type: boolean
+        has_git_token:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    TenantListResponse:
+      type: object
+      required: [tenants]
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantInfo"
+
+    CreateTenantRequest:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        namespace:
+          type: string
+        max_sessions:
+          type: integer
+        vault:
+          type: string
+        obsidian_auth_token:
+          type: string
+        obsidian_e2ee_password:
+          type: string
+        git_token:
+          type: string
+
+    CreateTenantResponse:
+      allOf:
+        - $ref: "#/components/schemas/TenantInfo"
+        - type: object
+          required: [api_key]
+          properties:
+            api_key:
+              type: string
+
+    UpdateTenantRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        max_sessions:
+          type: integer
+        vault:
+          type: [string, "null"]
+        obsidian_auth_token:
+          type: [string, "null"]
+        obsidian_e2ee_password:
+          type: [string, "null"]
+        git_token:
+          type: [string, "null"]
+
+    TenantUpdateResponse:
+      type: object
+      required: [id, name, max_sessions]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        max_sessions:
+          type: integer
+
+    RotateTenantKeyResponse:
+      type: object
+      required: [id, api_key]
+      properties:
+        id:
+          type: string
+        api_key:
+          type: string
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+        session_id:
+          type: string
+          format: uuid
 
   responses:
     BadRequest:
@@ -1094,42 +1366,42 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
     NotFound:
-      description: Session not found
+      description: Resource not found
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
     Conflict:
-      description: Name already in use or session busy
+      description: Request conflicts with current state
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
+    CapacityReached:
+      description: Session capacity reached
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     SessionBusy:
       description: Session is currently processing
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
     SessionStopped:
-      description: Session has stopped
+      description: Session is stopped or errored
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
-    RunnerNotConnected:
-      description: Runner container is not connected or not healthy
+    RunnerUnavailable:
+      description: Runner is not connected
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
-
     ServerError:
       description: Internal server error
       content:

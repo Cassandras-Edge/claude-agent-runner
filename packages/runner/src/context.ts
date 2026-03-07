@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { randomUUID } from "crypto";
-import type { ContextMessage, ContextStats } from "@claude-agent-runner/shared";
+import type { ContextMessage, ContextStats } from "@bugcat/claude-agent-runner-shared";
 
 // --- Internal types ---
 

@@ -4,105 +4,26 @@ import type { Duplex } from "stream";
 import { randomUUID } from "crypto";
 import type { SessionManager } from "./sessions.js";
 import type { WsBridge } from "./ws-bridge.js";
-import type { RunnerEvent } from "./types.js";
+import type {
+  ClientFrame,
+  CompactFrame,
+  GetCommandsFrame,
+  PermissionRequestFrame,
+  PermissionResponseFrame,
+  RewindFrame,
+  RunnerEvent,
+  SendFrame,
+  ServerFrame,
+  SessionStatus,
+  SetOptionsFrame,
+  SteerFrame,
+  SubscribeFrame,
+  UnsubscribeFrame,
+} from "@bugcat/claude-agent-runner-shared";
 import type { TenantManager } from "./tenants.js";
 import { authenticateWs } from "./auth.js";
 import { logger, runWithLogContext } from "./logger.js";
 import * as metrics from "./metrics.js";
-
-// --- Client → Server frame types ---
-
-interface SubscribeFrame {
-  type: "subscribe";
-  session_id: string;
-  request_id?: string;
-}
-
-interface UnsubscribeFrame {
-  type: "unsubscribe";
-  session_id: string;
-}
-
-interface SendFrame {
-  type: "send";
-  session_id: string;
-  message: string;
-  /** Multimodal content blocks (text + images). When present, overrides `message`. */
-  content?: Array<{ type: string; [key: string]: any }>;
-  model?: string;
-  max_turns?: number;
-  max_thinking_tokens?: number;
-  request_id?: string;
-}
-
-interface SteerFrame {
-  type: "steer";
-  session_id: string;
-  message: string;
-  /** Multimodal content blocks (text + images). When present, overrides `message`. */
-  content?: Array<{ type: string; [key: string]: any }>;
-  mode?: "steer" | "fork_and_steer";
-  model?: string;
-  max_turns?: number;
-  max_thinking_tokens?: number;
-  compact?: boolean;
-  compact_instructions?: string;
-  operations?: any[];
-  request_id?: string;
-}
-
-interface CompactFrame {
-  type: "compact";
-  session_id: string;
-  custom_instructions?: string;
-  request_id?: string;
-}
-
-interface PermissionResponseFrame {
-  type: "permission_response";
-  session_id: string;
-  tool_use_id: string;
-  behavior: "allow" | "deny" | "allowWithModification";
-  message?: string;
-  updated_input?: any;
-  request_id?: string;
-}
-
-interface RewindFrame {
-  type: "rewind";
-  session_id: string;
-  user_message_uuid: string;
-  request_id?: string;
-}
-
-interface SetOptionsFrame {
-  type: "set_options";
-  session_id: string;
-  model?: string;
-  max_thinking_tokens?: number;
-  compact_instructions?: string;
-  permission_mode?: string;
-  request_id?: string;
-}
-
-interface GetCommandsFrame {
-  type: "get_commands";
-  session_id: string;
-  request_id?: string;
-}
-
-interface PingFrame {
-  type: "ping";
-}
-
-type ClientFrame = SubscribeFrame | UnsubscribeFrame | SendFrame | SteerFrame | CompactFrame | PermissionResponseFrame | RewindFrame | SetOptionsFrame | GetCommandsFrame | PingFrame;
-
-// --- Server → Client frame types ---
-
-interface ServerFrame {
-  type: string;
-  [key: string]: any;
-}
 
 interface AttachOptions {
   bridge: WsBridge;
@@ -322,7 +243,7 @@ function handleSubscribe(ws: WebSocket, frame: SubscribeFrame, ctx: HandleContex
   }
 
   // Attach bridge EventEmitter listeners
-  const onStatus = (status: string) => {
+  const onStatus = (status: SessionStatus) => {
     sendFrame(ws, {
       type: "status",
       session_id,
