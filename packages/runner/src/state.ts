@@ -38,7 +38,6 @@ export const state = {
   forceCompactOnNextQuery: false,
   pendingCompactInstructions: undefined as string | undefined,
   activeCompactInstructions: undefined as string | undefined,
-  activeResponse: null as ReturnType<typeof import("@anthropic-ai/claude-agent-sdk").query> | null,
   vaultSyncProcess: null as ChildProcess | null,
 
   pendingSteer: null as {

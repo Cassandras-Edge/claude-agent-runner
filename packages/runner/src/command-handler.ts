@@ -216,9 +216,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         compactInstructions: steerMsg.compact_instructions,
         operations: steerMsg.operations,
       };
-      if (state.activeResponse) {
-        state.activeResponse.close();
-      } else if (state.session) {
+      if (state.session) {
         try { await (state.session as any).interrupt(); } catch {}
       }
     } else {
@@ -291,9 +289,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         requestId: fasRequestId,
         traceId: fasTraceId,
       };
-      if (state.activeResponse) {
-        state.activeResponse.close();
-      } else if (state.session) {
+      if (state.session) {
         try { await (state.session as any).interrupt(); } catch {}
       }
     } else {
