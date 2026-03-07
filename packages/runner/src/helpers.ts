@@ -64,6 +64,7 @@ export function buildClaudeChildEnv(forceCompact = false): Record<string, string
     TERM: "dumb",
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: forceCompact ? "1" : String(COMPACT_THRESHOLD_PCT),
     CLAUDE_MEM_SOCKET: state.MEM_SOCKET_PATH,
+    ENABLE_TOOL_SEARCH: "false",
   };
 }
 
