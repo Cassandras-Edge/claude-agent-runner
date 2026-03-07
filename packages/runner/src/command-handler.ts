@@ -218,6 +218,8 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
       };
       if (state.activeResponse) {
         state.activeResponse.close();
+      } else if (state.session) {
+        try { await (state.session as any).interrupt(); } catch {}
       }
     } else {
       // Empty steer while idle = no-op cancel
@@ -245,7 +247,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         await emitSnapshot(ws, "steer", steerRequestId);
 
         try {
-          await runTurn(ws, steerMsg.message, {
+          await runTurn(ws, steerMsg.content || steerMsg.message, {
             model: steerMsg.model,
             maxTurns: steerMsg.maxTurns,
             maxThinkingTokens: steerMsg.maxThinkingTokens,
@@ -289,13 +291,18 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         requestId: fasRequestId,
         traceId: fasTraceId,
       };
+      if (state.activeResponse) {
+        state.activeResponse.close();
+      } else if (state.session) {
+        try { await (state.session as any).interrupt(); } catch {}
+      }
     } else {
       logger.info("runner.ws", "fork_and_steer_idle_fallback", { session_id: state.SESSION_ID });
       return runWithLogContext({ sessionId: state.SESSION_ID, requestId: fasRequestId, traceId: fasTraceId }, async () => {
         state.isBusy = true;
         sendBusy(ws, fasRequestId, fasTraceId);
         try {
-          await runTurn(ws, fasMsg.message, {
+          await runTurn(ws, fasMsg.content || fasMsg.message, {
             model: fasMsg.model,
             maxTurns: fasMsg.maxTurns,
             maxThinkingTokens: fasMsg.maxThinkingTokens,
@@ -426,7 +433,10 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
 
   if (msg.type === "set_options") {
     if (msg.model) {
-      (globalThis as any).__runnerModelOverride = msg.model;
+      state.MODEL = msg.model;
+      if (state.session) {
+        try { await (state.session as any).setModel(msg.model); } catch {}
+      }
       logger.info("runner.ws", "model_override_set", { session_id: state.SESSION_ID, model: msg.model });
     }
     if (msg.maxThinkingTokens !== undefined) {

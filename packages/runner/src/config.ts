@@ -7,7 +7,7 @@ export const FORK_FROM = process.env.RUNNER_FORK_FROM;
 export const FORK_AT = process.env.RUNNER_FORK_AT;
 export const FORK_SESSION = process.env.RUNNER_FORK_SESSION === "true";
 export const FIRST_EVENT_TIMEOUT_MS = parseInt(process.env.RUNNER_FIRST_EVENT_TIMEOUT_MS || "90000", 10);
-export const COMPACT_THRESHOLD_PCT = parseInt(process.env.RUNNER_COMPACT_THRESHOLD_PCT || "20", 10);
+export const COMPACT_THRESHOLD_PCT = parseInt(process.env.RUNNER_COMPACT_THRESHOLD_PCT || "80", 10);
 export const ADDITIONAL_DIRECTORIES: string[] = process.env.RUNNER_ADDITIONAL_DIRECTORIES
   ? JSON.parse(process.env.RUNNER_ADDITIONAL_DIRECTORIES)
   : [];

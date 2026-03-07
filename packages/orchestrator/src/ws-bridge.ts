@@ -220,7 +220,12 @@ export class WsBridge extends EventEmitter {
     ws.send(JSON.stringify({
       type: "message",
       message,
-      ...overrides,
+      ...(overrides?.content ? { content: overrides.content } : {}),
+      ...(overrides?.model ? { model: overrides.model } : {}),
+      ...(overrides?.maxTurns ? { maxTurns: overrides.maxTurns } : {}),
+      ...(overrides?.maxThinkingTokens !== undefined ? { maxThinkingTokens: overrides.maxThinkingTokens } : {}),
+      request_id: overrides?.requestId,
+      trace_id: overrides?.traceId,
     }));
     logger.debug("orchestrator.ws_bridge", "forwarded_message_to_runner", {
       session_id: sessionId,
