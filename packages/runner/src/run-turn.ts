@@ -45,7 +45,7 @@ export async function runTurn(
     }
   }
 
-  if (overrides?.maxThinkingTokens !== undefined) {
+  if (overrides?.maxThinkingTokens !== undefined && overrides.maxThinkingTokens > 0) {
     try {
       await (state.session as any).setMaxThinkingTokens(overrides.maxThinkingTokens);
     } catch {}

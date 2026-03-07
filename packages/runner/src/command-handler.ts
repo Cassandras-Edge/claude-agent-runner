@@ -415,6 +415,18 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     }
     if (msg.maxThinkingTokens !== undefined) {
       (globalThis as any).__runnerMaxThinkingTokensOverride = msg.maxThinkingTokens;
+      const newThinking = msg.maxThinkingTokens > 0;
+      if (newThinking !== state.THINKING) {
+        state.THINKING = newThinking;
+        if (state.session) {
+          state.session.close();
+          state.session = null;
+          logger.info("runner.ws", "session_closed_for_thinking_change", {
+            session_id: state.SESSION_ID,
+            thinking: newThinking,
+          });
+        }
+      }
       logger.info("runner.ws", "max_thinking_tokens_override_set", {
         session_id: state.SESSION_ID,
         maxThinkingTokens: msg.maxThinkingTokens,
