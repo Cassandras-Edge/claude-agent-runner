@@ -6,7 +6,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKSession, SDKSessionOptions } from "@anthropic-ai/claude-agent-sdk";
 import { execSync, spawn as spawnChild, type ChildProcess } from "child_process";
-import { existsSync, mkdirSync } from "fs";
+import { existsSync, mkdirSync, rmSync } from "fs";
 import { randomUUID } from "crypto";
 import type { OrchestratorCommand, OrchestratorForkAndSteerCommand, OrchestratorPermissionResponseCommand, ContextOperation } from "@claude-agent-runner/shared";
 import {
@@ -130,7 +130,9 @@ function syncVault(): void {
   }
 
   // Stable device name to avoid exhausting Obsidian's 10-device limit
-  const deviceName = `runner-${VAULT.replace(/[^a-z0-9]/gi, "-").toLowerCase().slice(0, 20)}`;
+  // Per-session device name so multiple agents sharing the same vault don't collide
+  // on the Obsidian sync server. Uses session ID (first 8 chars) for uniqueness.
+  const deviceName = `runner-${SESSION_ID.slice(0, 8)}`;
   const passwordArgs = process.env.OBSIDIAN_E2EE_PASSWORD
     ? ["--password", process.env.OBSIDIAN_E2EE_PASSWORD]
     : [];
@@ -159,18 +161,43 @@ function syncVault(): void {
     throw new Error(`Vault sync failed: ${message}`);
   }
 
+  // Remove stale sync lock from previous pod (directory-based lock persists on vault PVC)
+  const lockPath = `${WORKSPACE}/.obsidian/.sync.lock`;
+  try {
+    if (existsSync(lockPath)) {
+      rmSync(lockPath, { recursive: true, force: true });
+      logger.info("runner.vault", "stale_sync_lock_removed", { path: lockPath });
+    }
+  } catch (err) {
+    logger.warn("runner.vault", "failed_to_remove_sync_lock", {
+      path: lockPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   // Start continuous sync immediately — pulls vault files in the background
   // so session creation doesn't block for 90+ seconds waiting for a full sync.
-  // Files appear progressively; CLAUDE.md and small files arrive within seconds.
+  // If /workspace is backed by a persistent volume (vault PVC), only deltas are pulled.
   try {
     vaultSyncProcess = spawnChild("ob", ["sync", "--continuous", "--path", WORKSPACE], {
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
       detached: false,
       env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken },
     });
 
+    let stderrOutput = "";
+    vaultSyncProcess.stderr?.on("data", (data: Buffer) => {
+      stderrOutput += data.toString();
+    });
+
     vaultSyncProcess.on("exit", (code) => {
-      logger.warn("runner.vault", "background_sync_exited", { vault: VAULT, code });
+      if (code !== 0) {
+        logger.error("runner.vault", "background_sync_exited", {
+          vault: VAULT, code, stderr: stderrOutput.trim().slice(0, 500),
+        });
+      } else {
+        logger.info("runner.vault", "background_sync_stopped", { vault: VAULT });
+      }
       vaultSyncProcess = null;
     });
 
