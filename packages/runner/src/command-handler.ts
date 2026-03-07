@@ -650,9 +650,16 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         if (cfg.model) await (state.session as any).setModel(cfg.model);
         if (cfg.mcpServers !== undefined) await (state.session as any).setMcpServers(cfg.mcpServers || {});
         if (cfg.permissionMode) await (state.session as any).setPermissionMode(cfg.permissionMode);
-        if (state.THINKING) await (state.session as any).setMaxThinkingTokens(10000);
-        else await (state.session as any).setMaxThinkingTokens(0);
-        logger.info("runner.ws", "adopt_session_reconfigured", { session_id: state.SESSION_ID });
+        if (state.THINKING) {
+          await (state.session as any).setMaxThinkingTokens(10000);
+          logger.info("runner.ws", "adopt_session_reconfigured", { session_id: state.SESSION_ID });
+        } else {
+          // Close session — setMaxThinkingTokens(0) doesn't reliably disable thinking.
+          // Session will be lazily recreated without thinking on next runTurn.
+          state.session.close();
+          state.session = null;
+          logger.info("runner.ws", "adopt_session_closed_for_thinking_off", { session_id: state.SESSION_ID });
+        }
       } else {
         state.session = await createOrResumeSession(ws);
         logger.info("runner.ws", "adopt_session_created", { session_id: state.SESSION_ID });
