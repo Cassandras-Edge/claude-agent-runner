@@ -2,34 +2,34 @@
   "id": "mcp-background",
   "description": "Add run_in_background support to all MCP tool calls using AppState.tasks",
   "target": "js-only",
-  "tested_versions": ["2.1.63"],
+  "tested_versions": ["2.1.63", "2.1.71"],
   "steps": [
     {
       "type": "extract",
       "id": "task_id_fn",
       "scope": "global",
-      "pattern": "function (\\w+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\(8\\)",
+      "pattern": "function ([\\w$]+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\(8\\)",
       "store_as": "TASK_ID_FN"
     },
     {
       "type": "extract",
       "id": "task_obj_fn",
       "scope": "global",
-      "pattern": "function (\\w+)\\(\\w+,\\w+,\\w+,\\w+\\)\\{return\\{id:\\w+,type:\\w+,status:\"pending\"[^}]+outputOffset:0,notified:!1",
+      "pattern": "function ([\\w$]+)\\(\\w+,\\w+,\\w+,\\w+\\)\\{return\\{id:\\w+,type:\\w+,status:\"pending\"[^}]+outputOffset:0,notified:!1",
       "store_as": "TASK_OBJ_FN"
     },
     {
       "type": "extract",
       "id": "output_path_fn",
       "scope": "global",
-      "pattern": "function (\\w+)\\(\\w+\\)\\{return \\w+\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)\\}",
+      "pattern": "function ([\\w$]+)\\(\\w+\\)\\{return \\w+\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)\\}",
       "store_as": "OUTPUT_PATH_FN"
     },
     {
       "type": "extract",
       "id": "task_register_fn",
       "scope": "global",
-      "pattern": "function (\\w+)\\(\\w+,\\w+\\)\\{\\w+\\(\\(\\w+\\)=>\\(\\{[^}]*tasks:\\{[^}]*\\[\\w+\\.id\\]:\\w+\\}\\}\\)\\)",
+      "pattern": "function ([\\w$]+)\\(\\w+,\\w+\\)\\{\\w+\\(\\(\\w+\\)=>\\(\\{[^}]*tasks:\\{[^}]*\\[\\w+\\.id\\]:\\w+\\}\\}\\)\\)",
       "store_as": "TASK_REGISTER_FN"
     },
     {
@@ -43,7 +43,7 @@
       "type": "extract",
       "id": "mkdir_fn",
       "scope": "global",
-      "pattern": "async function (\\w+)\\(\\)\\{await \\w+\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}",
+      "pattern": "async function ([\\w$]+)\\(\\)\\{await \\w+\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}",
       "store_as": "MKDIR_FN"
     },
     {
@@ -64,22 +64,6 @@
     },
     {
       "type": "extract",
-      "id": "guard_fn",
-      "scope": "region",
-      "anchor": "mcpInfo:{serverName",
-      "pattern": "(\\w+)\\(\\w+\\.name\\)\\?\\w+\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
-      "store_as": "GUARD_FN"
-    },
-    {
-      "type": "extract",
-      "id": "compat_fn",
-      "scope": "region",
-      "anchor": "mcpInfo:{serverName",
-      "pattern": "\\w+\\(\\w+\\.name\\)\\?(\\w+)\\(\\w+\\.name\\):\\{\\}\\}\\}\\)\\.filter",
-      "store_as": "COMPAT_FN"
-    },
-    {
-      "type": "extract",
       "id": "filter_fn",
       "scope": "region",
       "anchor": "mcpInfo:{serverName",
@@ -87,9 +71,9 @@
       "store_as": "FILTER_FN"
     },
     {
-      "type": "insert_after",
+      "type": "insert_before",
       "id": "inject_mcp_bg",
-      "marker": "{{GUARD_FN}}({{CONN_VAR}}.name)?{{COMPAT_FN}}({{TOOL_VAR}}.name):{}}})",
+      "marker": ".filter({{FILTER_FN}})",
       "code_file": "patch-code.js.tmpl"
     }
   ]

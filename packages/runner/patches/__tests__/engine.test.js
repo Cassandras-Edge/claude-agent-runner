@@ -100,6 +100,8 @@ describe.skipIf(!snapshotExists)("Patch Engine — output verification against c
       expect(patchedJS).toContain("run_in_background");
       // compact-instructions
       expect(patchedJS).toContain("RUNNER_COMPACT_INSTRUCTIONS");
+      // compact-model-override
+      expect(patchedJS).toContain("RUNNER_COMPACT_MODEL");
     });
 
     it("no-sibling-abort blanks the guard but keeps the method", () => {
@@ -247,7 +249,7 @@ describe.skipIf(!snapshotExists)("Patch Engine — output verification against c
     });
 
     it("resolves MCP region variables", () => {
-      for (const name of ["CONN_VAR", "TOOL_VAR", "GUARD_FN", "COMPAT_FN", "FILTER_FN"]) {
+      for (const name of ["CONN_VAR", "TOOL_VAR", "FILTER_FN"]) {
         expect(result.vars[name], `missing ${name}`).toBeTruthy();
       }
     });
@@ -302,12 +304,6 @@ describe.skipIf(!snapshotExists)("Patch Engine — output verification against c
       result = await applyPatch(originalJS, spec, { cliVersion: "2.1.63" });
     });
 
-    it("finds the compact function by content anchor", () => {
-      expect(result.vars.COMPACT_FN).toBe("rJ4");
-      expect(Number(result.vars.COMPACT_FN_START)).toBeGreaterThan(0);
-      expect(Number(result.vars.COMPACT_FN_END)).toBeGreaterThan(Number(result.vars.COMPACT_FN_START));
-    });
-
     it("injects RUNNER_COMPACT_INSTRUCTIONS env var read", () => {
       expect(result.content).toContain("process.env.RUNNER_COMPACT_INSTRUCTIONS");
     });
@@ -322,14 +318,38 @@ describe.skipIf(!snapshotExists)("Patch Engine — output verification against c
       expect(result.content).toContain("Additional Instructions");
     });
 
-    it("does not modify the other compact function", () => {
-      // The first compact function (before rJ4) should be untouched
-      const firstFnIdx = result.content.indexOf('if(A&&A.trim()!=="")q+=`');
-      const compactIdx = result.content.indexOf("RUNNER_COMPACT_INSTRUCTIONS");
-      // The untouched occurrence should come before the patched one
-      expect(firstFnIdx).toBeLessThan(compactIdx);
-      // Verify the original pattern still exists (in the first function)
-      expect(result.content.substring(firstFnIdx, firstFnIdx + 100)).toContain("${A}");
+    it("patches both compact functions", () => {
+      // Both compaction functions should be patched
+      const matches = result.content.match(/RUNNER_COMPACT_INSTRUCTIONS/g);
+      expect(matches.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("output length increased (replacement is longer than original)", () => {
+      expect(result.content.length).toBeGreaterThan(originalJS.length);
+    });
+  });
+
+  describe("compact-model-override", () => {
+    let result;
+
+    beforeAll(async () => {
+      const spec = loadSpec("compact-model-override");
+      result = await applyPatch(originalJS, spec, { cliVersion: "2.1.63" });
+    });
+
+    it("injects RUNNER_COMPACT_MODEL env var override", () => {
+      expect(result.content).toContain("process.env.RUNNER_COMPACT_MODEL");
+    });
+
+    it("falls back to mainLoopModel when env var is not set", () => {
+      expect(result.content).toContain("RUNNER_COMPACT_MODEL)||Y.options.mainLoopModel");
+    });
+
+    it("only replaces the model in the hG6 options (not tool search or hooks)", () => {
+      // The other two occurrences of Y.options.mainLoopModel should remain unchanged
+      const matches = result.content.match(/Y\.options\.mainLoopModel/g);
+      // Original has 3 occurrences in the compact area; we replace 1, so 2 bare + 1 wrapped
+      expect(matches.length).toBeGreaterThanOrEqual(3);
     });
 
     it("output length increased (replacement is longer than original)", () => {

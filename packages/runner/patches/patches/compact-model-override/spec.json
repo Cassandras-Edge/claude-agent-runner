@@ -1,0 +1,20 @@
+{
+  "id": "compact-model-override",
+  "description": "Override the model used for compaction via RUNNER_COMPACT_MODEL env var. Falls back to session model if not set.",
+  "target": "js-only",
+  "tested_versions": ["2.1.63", "2.1.71"],
+  "steps": [
+    {
+      "type": "find_replace",
+      "id": "override_compact_model",
+      "find": "model:Y.options.mainLoopModel,toolChoice:void 0",
+      "replace": "model:(typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_MODEL)||Y.options.mainLoopModel,toolChoice:void 0",
+      "mode": "literal",
+      "expected_count": 1
+    }
+  ],
+  "assertions": {
+    "pre": [{ "present": "model:Y.options.mainLoopModel,toolChoice:void 0" }],
+    "post": [{ "present": "RUNNER_COMPACT_MODEL" }]
+  }
+}

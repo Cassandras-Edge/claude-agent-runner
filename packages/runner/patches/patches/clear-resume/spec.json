@@ -2,13 +2,13 @@
   "id": "clear-resume",
   "description": "/clear and /resume commands in stream-json mode (SDK)",
   "target": "js-only",
-  "tested_versions": ["2.1.63"],
+  "tested_versions": ["2.1.63", "2.1.71"],
   "steps": [
     {
       "type": "extract",
       "id": "loader_fn",
       "scope": "global",
-      "pattern": "let \\w+=await (\\w+)\\(\\w+\\.sessionId,\\w+\\.jsonlFile",
+      "pattern": "let \\w+=await ([\\w$]+)\\(\\w+\\.sessionId,\\w+\\.jsonlFile",
       "store_as": "LOADER_FN"
     },
     {

@@ -9,7 +9,7 @@ export interface AutoCompactConfig {
 }
 
 const DEFAULT_CONFIG: AutoCompactConfig = {
-  thresholdPct: parseInt(process.env.AUTO_COMPACT_THRESHOLD_PCT || "80", 10),
+  thresholdPct: parseInt(process.env.AUTO_COMPACT_THRESHOLD_PCT || "95", 10),
   idleSeconds: parseInt(process.env.AUTO_COMPACT_IDLE_SECONDS || "30", 10),
   highContextModelCap: 60,
 };

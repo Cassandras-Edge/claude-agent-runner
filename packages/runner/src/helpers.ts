@@ -1,4 +1,4 @@
-import { COMPACT_THRESHOLD_PCT } from "./config.js";
+import { COMPACT_THRESHOLD_PCT, COMPACT_MODEL } from "./config.js";
 import { logger } from "./logger.js";
 import { state } from "./state.js";
 
@@ -63,6 +63,7 @@ export function buildClaudeChildEnv(forceCompact = false): Record<string, string
     LANG: "C.UTF-8",
     TERM: "dumb",
     CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: forceCompact ? "1" : String(COMPACT_THRESHOLD_PCT),
+    ...(COMPACT_MODEL ? { RUNNER_COMPACT_MODEL: COMPACT_MODEL } : {}),
     CLAUDE_MEM_SOCKET: state.MEM_SOCKET_PATH,
     ENABLE_TOOL_SEARCH: "false",
   };

@@ -81,6 +81,7 @@ Currently pinned to `@anthropic-ai/claude-code@2.1.63` (set in `packages/runner/
 | `clear-resume` | `/clear` and `/resume` in SDK stream-json mode |
 | `no-sibling-abort` | Parallel tool calls complete independently (no sibling abort) |
 | `compact-instructions` | Custom compaction prompts via `RUNNER_COMPACT_INSTRUCTIONS` env var |
+| `compact-model-override` | Use a different model for compaction via `RUNNER_COMPACT_MODEL` env var (defaults to Sonnet 4.6) |
 
 ### Inline Patches (in Dockerfile, not in patch system)
 
@@ -104,23 +105,85 @@ Manual upgrade:
 # Download new CLI
 npm pack @anthropic-ai/claude-code@<version> --pack-destination /tmp
 tar xzf /tmp/anthropic-ai-claude-code-*.tgz -C /tmp/claude-code
-cp /tmp/claude-code/package/cli.js packages/runner/patches/snapshots/cli-<version>.js
 
-# Test patches
+# Test patches against new CLI
 cd packages/runner/patches
-bun run scripts/patch-all.js --binary snapshots/cli-<version>.js --js-only --dry-run
+bun run scripts/patch-all.js --binary /tmp/claude-code/package/cli.js --js-only --dry-run
 
-# If all pass: update Dockerfile version pins, rebuild
-# If a patch fails: update extractors in the patch's spec.json
+# If all pass: update Dockerfile version pins (2 lines), rebuild
+# If patches break: fix extractors (see "Fixing Broken Patches" below)
+# Also check inline Dockerfile patches (see below)
 ```
 
-### Patch Types
+### Patch Step Types
 
-- **replacement**: same-length string substitution (binary + JS)
-- **insertion**: inject code after a marker (JS-only)
-- **template**: version-resilient — uses regex extractors to derive minified variable names from stable structural patterns (JS-only)
+| Step Type | What it does | Scope |
+|-----------|-------------|-------|
+| `extract` | Regex capture → store in variable. `scope: "global"` searches all 11MB, `scope: "region"` searches 30KB around `anchor` | Read-only |
+| `find_replace` | Literal or regex find/replace on full JS content | Global |
+| `find_function` | Locate a function by a unique string inside its body, store boundaries | Read-only |
+| `replace_in_function` | Find/replace scoped to function boundaries from `find_function` | Scoped |
+| `insert_after` / `insert_before` | Inject code at a marker string | JS-only |
 
-Templates are the most robust. See `packages/runner/patches/README.md` for full details.
+Variables from `extract` and `find_function` steps are available in later steps via `{{VAR_NAME}}` interpolation.
+
+### Fixing Broken Patches
+
+When a patch breaks on a new CLI version, the minified variable/function names changed. The fix process:
+
+**1. Get the new CLI source:**
+```bash
+npm pack @anthropic-ai/claude-code@<version> --pack-destination /tmp
+mkdir -p /tmp/claude-code && tar xzf /tmp/anthropic-ai-claude-code-*.tgz -C /tmp/claude-code
+```
+
+**2. Identify what broke** — the dry-run output tells you which step failed and shows the regex that didn't match.
+
+**3. Find the equivalent code in the new CLI** — Use stable strings (error messages, property names, string literals) as anchors to locate the same code region:
+```bash
+# Search for stable strings near the broken pattern
+grep -o '.\{80\}STABLE_STRING.\{80\}' /tmp/claude-code/package/cli.js
+```
+
+**What's stable across CLI versions** (safe for anchors/extractors):
+- Error message strings: `"only prompt commands are supported in streaming mode"`
+- Property names: `mutableMessages:`, `session_id:`, `originalMcpToolName:`
+- String literals: `"stream-json"`, `"task_started"`, `"compact_boundary"`
+- Method calls: `.enqueue(`, `.randomUUID()`, `.push(`
+- Structural patterns: `outputOffset:0,notified:!1`
+
+**What changes every build** (must be derived via extractors):
+- Local variable names: `r`, `HT`, `I`, `E`, `kR`
+- Function names: `mXR`, `b00`, `P00`
+- Class names: `P00`, `amT`
+
+**4. Update the extractor regex** — Adjust the regex pattern to match the new minified code structure. The capture group `(\w+)` should still grab the right variable name.
+
+**5. Test the fix:**
+```bash
+cd packages/runner/patches
+bun run scripts/patch-all.js --binary /tmp/claude-code/package/cli.js --js-only --dry-run
+```
+
+**6. Update `tested_versions`** in `spec.json` and Dockerfile version pins.
+
+### Inline Dockerfile Patches
+
+Two patches are applied directly in the Dockerfile (not through the patch system). These are **version-specific string replacements** — they break if minified variable names change.
+
+1. **SDK patch** (Dockerfile line 63): `includePartialMessages:!1` → `includePartialMessages:Q.includePartialMessages??!1` in `sdk.mjs` — enables token-level streaming in V2
+2. **CLI patch** (Dockerfile lines 78-87): removes `!s||` from `--include-partial-messages` guard — relaxes --print requirement
+
+To check these against a new version:
+```bash
+# Check SDK patch (look at the installed sdk.mjs)
+grep 'includePartialMessages:!1' node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
+
+# Check CLI patch (look for the guard pattern in the patched CLI)
+grep 'if(T6){if(!s||h!==' /tmp/claude-code/package/cli.js
+```
+
+If the exact strings aren't found, examine the new sdk.mjs / cli.js to find the equivalent patterns.
 
 ## Obsidian Integration (Optional)
 

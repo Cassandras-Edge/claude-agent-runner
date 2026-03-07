@@ -2,7 +2,7 @@
   "id": "no-sibling-abort",
   "description": "Remove sibling tool call abort — let each tool succeed or fail independently",
   "target": "both",
-  "tested_versions": ["2.1.63"],
+  "tested_versions": ["2.1.63", "2.1.71"],
   "steps": [
     {
       "type": "find_replace",
