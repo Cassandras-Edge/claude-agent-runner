@@ -94,7 +94,7 @@ describe("rowToSession", () => {
       additional_directories: JSON.stringify(["/tmp/a", "/tmp/b"]),
       compact_instructions: "keep summaries short",
       permission_mode: "default",
-      mcp_servers: JSON.stringify({ docs: { command: "npx", args: ["-y", "docs"] } }),
+      mcp_servers: JSON.stringify({ docs: { type: "http", url: "https://docs.example.com/mcp" } }),
       allowed_paths: JSON.stringify(["/workspace", "/tmp/a"]),
     };
 
@@ -129,7 +129,7 @@ describe("rowToSession", () => {
     expect(session.additionalDirectories).toEqual(["/tmp/a", "/tmp/b"]);
     expect(session.compactInstructions).toBe("keep summaries short");
     expect(session.permissionMode).toBe("default");
-    expect(session.mcpServers).toEqual({ docs: { command: "npx", args: ["-y", "docs"] } });
+    expect(session.mcpServers).toEqual({ docs: { type: "http", url: "https://docs.example.com/mcp" } });
     expect(session.allowedPaths).toEqual(["/workspace", "/tmp/a"]);
   });
 

@@ -24,7 +24,7 @@ export const state = {
   DISALLOWED_TOOLS: [] as string[],
   COMPACT_INSTRUCTIONS: undefined as string | undefined,
   PERMISSION_MODE: "bypassPermissions",
-  MCP_SERVERS: {} as Record<string, { command: string; args?: string[]; env?: Record<string, string> }>,
+  MCP_SERVERS: {} as Record<string, { type: "http" | "sse"; url: string; headers?: Record<string, string> }>,
   ALLOWED_PATHS: [] as string[],
   VAULT: undefined as string | undefined,
   WORKSPACE: "/workspace",

@@ -252,7 +252,7 @@ export function rowToSession(row: SessionRow): Session & { oauthTokenIndex: numb
     additionalDirectories: parseJsonArray(row.additional_directories),
     compactInstructions: row.compact_instructions ?? undefined,
     permissionMode: row.permission_mode ?? undefined,
-    mcpServers: parseJsonObject<Record<string, { command: string; args?: string[] }>>(row.mcp_servers),
+    mcpServers: parseJsonObject<Record<string, { type: "http" | "sse"; url: string; headers?: Record<string, string> }>>(row.mcp_servers),
     allowedPaths: parseJsonArray(row.allowed_paths),
     createdAt: new Date(row.created_at),
     lastActivity: new Date(row.last_activity),

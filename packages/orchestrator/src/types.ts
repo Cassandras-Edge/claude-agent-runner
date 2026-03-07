@@ -56,7 +56,7 @@ export interface Session {
   additionalDirectories?: string[];
   compactInstructions?: string;
   permissionMode?: string;
-  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  mcpServers?: Record<string, { type: "http" | "sse"; url: string; headers?: Record<string, string> }>;
   allowedPaths?: string[];
   createdAt: Date;
   lastActivity: Date;
@@ -94,7 +94,7 @@ export interface SessionCreateConfig {
   additionalDirectories?: string[];
   compactInstructions?: string;
   permissionMode?: string;
-  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  mcpServers?: Record<string, { type: "http" | "sse"; url: string; headers?: Record<string, string> }>;
   allowedPaths?: string[];
   forkedFrom?: string;
   tenantId?: string;

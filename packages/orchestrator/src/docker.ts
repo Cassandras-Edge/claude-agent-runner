@@ -32,7 +32,7 @@ export interface SpawnConfig {
   additionalDirectories?: string[];
   compactInstructions?: string;
   permissionMode?: string;
-  mcpServers?: Record<string, { command: string; args?: string[] }>;
+  mcpServers?: Record<string, { type: "http" | "sse"; url: string; headers?: Record<string, string> }>;
   allowedPaths?: string[];
   sdkSessionId?: string;
   forkFrom?: string;

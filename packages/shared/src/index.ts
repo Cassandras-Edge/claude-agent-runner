@@ -3,9 +3,9 @@
 export type Model = "haiku" | "sonnet" | "sonnet[1m]" | "opus" | "opus[1m]";
 
 export interface McpServerConfig {
-  command: string;
-  args?: string[];
-  env?: Record<string, string>;
+  type: "http" | "sse";
+  url: string;
+  headers?: Record<string, string>;
 }
 
 /** Content block for multimodal messages. */

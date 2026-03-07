@@ -66,7 +66,7 @@ describe("SessionManager", () => {
         additionalDirectories: ["/tmp/a", "/tmp/b"],
         compactInstructions: "compact please",
         permissionMode: "default",
-        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        mcpServers: { docs: { type: "http" as const, url: "https://docs.example.com/mcp" } },
         allowedPaths: ["/workspace", "/tmp/a"],
       });
 
@@ -76,7 +76,7 @@ describe("SessionManager", () => {
       expect(session.additionalDirectories).toEqual(["/tmp/a", "/tmp/b"]);
       expect(session.compactInstructions).toBe("compact please");
       expect(session.permissionMode).toBe("default");
-      expect(session.mcpServers).toEqual({ docs: { command: "npx", args: ["-y", "docs"] } });
+      expect(session.mcpServers).toEqual({ docs: { type: "http", url: "https://docs.example.com/mcp" } });
       expect(session.allowedPaths).toEqual(["/workspace", "/tmp/a"]);
     });
 

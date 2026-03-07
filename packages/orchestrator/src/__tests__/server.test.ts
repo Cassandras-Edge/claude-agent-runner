@@ -286,7 +286,7 @@ describe("Server Routes", () => {
         additionalDirectories: ["/tmp/a"],
         compactInstructions: "compact please",
         permissionMode: "default",
-        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        mcpServers: { docs: { type: "http" as const, url: "https://docs.example.com/mcp" } },
         allowedPaths: ["/workspace", "/tmp/a"],
       });
       sessions.setSdkSessionId("s1", "sdk-123");
@@ -315,7 +315,7 @@ describe("Server Routes", () => {
         additionalDirectories: ["/tmp/a"],
         compactInstructions: "compact please",
         permissionMode: "default",
-        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        mcpServers: { docs: { type: "http" as const, url: "https://docs.example.com/mcp" } },
         allowedPaths: ["/workspace", "/tmp/a"],
         sdkSessionId: "sdk-123",
       }));
@@ -337,7 +337,7 @@ describe("Server Routes", () => {
         additionalDirectories: ["/tmp/a"],
         compactInstructions: "compact please",
         permissionMode: "default",
-        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        mcpServers: { docs: { type: "http" as const, url: "https://docs.example.com/mcp" } },
         allowedPaths: ["/workspace", "/tmp/a"],
       });
       sessions.setSdkSessionId("parent", "sdk-parent");
@@ -364,7 +364,7 @@ describe("Server Routes", () => {
         additionalDirectories: ["/tmp/a"],
         compactInstructions: "compact please",
         permissionMode: "default",
-        mcpServers: { docs: { command: "npx", args: ["-y", "docs"] } },
+        mcpServers: { docs: { type: "http" as const, url: "https://docs.example.com/mcp" } },
         allowedPaths: ["/workspace", "/tmp/a"],
         forkFrom: "sdk-parent",
         forkSession: true,
