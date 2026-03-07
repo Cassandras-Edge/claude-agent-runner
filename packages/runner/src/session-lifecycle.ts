@@ -94,26 +94,46 @@ export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSe
 
 export async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession> {
   const opts = buildSessionOptions(false, ws);
+  let session: SDKSession;
 
   if (FORK_FROM && !state.sdkSessionId) {
     logger.info("runner.session", "resuming_session_for_fork", {
       fork_from: FORK_FROM,
       fork_at: FORK_AT,
     });
-    return unstable_v2_resumeSession(FORK_FROM, {
+    session = await unstable_v2_resumeSession(FORK_FROM, {
       ...opts,
       ...(FORK_SESSION ? { forkSession: true } : {}),
       ...(FORK_AT ? { resumeSessionAt: FORK_AT } : {}),
     } as any);
-  }
-
-  if (state.sdkSessionId) {
+  } else if (state.sdkSessionId) {
     logger.info("runner.session", "resuming_session", { sdk_session_id: state.sdkSessionId });
-    return unstable_v2_resumeSession(state.sdkSessionId, opts as any);
+    session = await unstable_v2_resumeSession(state.sdkSessionId, opts as any);
+  } else {
+    logger.info("runner.session", "creating_new_session", { cwd: opts.cwd, model: opts.model });
+    session = await unstable_v2_createSession(opts as any);
   }
 
-  logger.info("runner.session", "creating_new_session", { cwd: opts.cwd, model: opts.model });
-  return unstable_v2_createSession(opts as any);
+  // The V2 session wrapper (SQ) doesn't pass mcpServers, settingSources, systemPrompt,
+  // maxTurns, or thinking config through to the internal process manager.
+  // Apply them post-creation via session.query methods.
+  const query = (session as any).query;
+  if (query) {
+    if (Object.keys(state.MCP_SERVERS).length > 0) {
+      try {
+        await query.setMcpServers(state.MCP_SERVERS);
+        logger.info("runner.session", "mcp_servers_configured", {
+          servers: Object.keys(state.MCP_SERVERS),
+        });
+      } catch (err) {
+        logger.warn("runner.session", "mcp_servers_configure_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  return session;
 }
 
 export async function ensureIpcConnected(): Promise<void> {
