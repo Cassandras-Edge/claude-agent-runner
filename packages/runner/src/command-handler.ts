@@ -128,7 +128,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         if (!steer.message && !steer.content) {
           logger.info("runner.ws", "steer_cancel", { session_id: state.SESSION_ID, request_id: steer.requestId });
           if (state.session) {
-            try { await (state.session as any).interrupt(); } catch {}
+            try { await (state.session as any).query.interrupt(); } catch {}
           }
           break;
         }
@@ -217,7 +217,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         operations: steerMsg.operations,
       };
       if (state.session) {
-        try { await (state.session as any).interrupt(); } catch {}
+        try { await (state.session as any).query.interrupt(); } catch {}
       }
     } else {
       // Empty steer while idle = no-op cancel
@@ -290,7 +290,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         traceId: fasTraceId,
       };
       if (state.session) {
-        try { await (state.session as any).interrupt(); } catch {}
+        try { await (state.session as any).query.interrupt(); } catch {}
       }
     } else {
       logger.info("runner.ws", "fork_and_steer_idle_fallback", { session_id: state.SESSION_ID });
@@ -431,7 +431,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     if (msg.model) {
       state.MODEL = msg.model;
       if (state.session) {
-        try { await (state.session as any).setModel(msg.model); } catch {}
+        try { await (state.session as any).query.setModel(msg.model); } catch {}
       }
       logger.info("runner.ws", "model_override_set", { session_id: state.SESSION_ID, model: msg.model });
     }
@@ -512,7 +512,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     const requestId = msg.request_id;
     const traceId = msg.trace_id;
     try {
-      const commands = state.session ? await (state.session as any).supportedCommands() : [];
+      const commands = state.session ? await (state.session as any).query.supportedCommands() : [];
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: "commands_result",
@@ -653,11 +653,11 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
 
       if (state.session) {
         logger.info("runner.ws", "adopt_reconfiguring_session", { session_id: state.SESSION_ID });
-        if (cfg.model) await (state.session as any).setModel(cfg.model);
-        if (cfg.mcpServers !== undefined) await (state.session as any).setMcpServers(cfg.mcpServers || {});
-        if (cfg.permissionMode) await (state.session as any).setPermissionMode(cfg.permissionMode);
+        if (cfg.model) await (state.session as any).query.setModel(cfg.model);
+        if (cfg.mcpServers !== undefined) await (state.session as any).query.setMcpServers(cfg.mcpServers || {});
+        if (cfg.permissionMode) await (state.session as any).query.setPermissionMode(cfg.permissionMode);
         if (state.THINKING) {
-          await (state.session as any).setMaxThinkingTokens(10000);
+          await (state.session as any).query.setMaxThinkingTokens(10000);
           logger.info("runner.ws", "adopt_session_reconfigured", { session_id: state.SESSION_ID });
         } else {
           // Close session — setMaxThinkingTokens(0) doesn't reliably disable thinking.

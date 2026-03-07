@@ -47,13 +47,13 @@ export async function runTurn(
 
   if (overrides?.model && overrides.model !== state.MODEL) {
     try {
-      await (state.session as any).setModel(overrides.model);
+      await (state.session as any).query.setModel(overrides.model);
     } catch {}
   }
 
   if (overrides?.maxThinkingTokens !== undefined && overrides.maxThinkingTokens > 0) {
     try {
-      await (state.session as any).setMaxThinkingTokens(overrides.maxThinkingTokens);
+      await (state.session as any).query.setMaxThinkingTokens(overrides.maxThinkingTokens);
     } catch {}
   }
 
