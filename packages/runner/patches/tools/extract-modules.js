@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 
-const buf = readFileSync("snapshots/cli.js");
+const binaryPath = process.argv[2] || "snapshots/cli.js";
+const buf = readFileSync(binaryPath);
 const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 const decoder = new TextDecoder();
 
