@@ -17,7 +17,7 @@ permissions:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: arc-runner
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,7 +39,7 @@ jobs:
 
   validate-manifests:
     name: Validate k8s manifests
-    runs-on: ubuntu-latest
+    runs-on: arc-runner
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,7 +55,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.image }}
-    runs-on: ubuntu-latest
+    runs-on: arc-runner
     needs: [test, validate-manifests]
     if: github.event_name == 'push'
     strategy:
