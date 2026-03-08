@@ -1,5 +1,7 @@
 # Claude Agent Runner
 
+> **Disclaimer:** This project is experimental and under active development. It wraps the Claude Agent SDK in ways that may break with new Claude Code releases. The CLI patching system is inherently fragile. Use at your own risk — no stability guarantees.
+
 Multi-session Claude Code agent orchestrator. Run concurrent, isolated Claude agent sessions through a REST + WebSocket API with streaming events, live context surgery, fork-and-steer interrupts, dynamic model switching, permission control, and custom MCP servers.
 
 Deploys on **Docker** (single host) or **Kubernetes** (k3s/k8s) with multi-tenant isolation, Cloudflare Tunnel ingress, and full observability via VictoriaMetrics + VictoriaLogs + Grafana.
