@@ -229,20 +229,20 @@ See `.env.example` for the full list.
 
 | Workflow | Trigger | What it does |
 |----------|---------|-------------|
-| `docker.yml` | Push to main, tags, PRs | Test → validate k8s manifests → build + push to GHCR |
+| `docker.yml` | Push to main, tags, PRs | Test → build + push to local registry (`172.20.0.161:30500`) |
 | `cli-version-check.yml` | Daily cron (9am UTC) + manual | Check for new CLI versions, test patches, auto-PR or auto-fix |
 | `claude.yml` | — | Claude Code action for PR reviews |
 | `claude-code-review.yml` | — | Claude Code PR review |
 
-### Image Tags on GHCR
+### Image Tags
 
 - `:latest` on main pushes and version tags
 - `main-<sha>` on main pushes
-- Semver tags (`1.2.3`, `1.2`) on `v*` tags
+
+Images are pushed to the local registry (`172.20.0.161:30500`). ArgoCD Image Updater detects new tags and auto-deploys.
 
 ### What's NOT Automated
 
-- **Deployment**: images build and push to GHCR, but nothing auto-deploys to k3d/k8s
 - **Inline patch validation**: the two Dockerfile sed/node patches aren't tested in the patch dry-run
 
 ## Deployment
@@ -251,7 +251,7 @@ See `.env.example` for the full list.
 
 k8s manifests live in the **cassandra-k8s** repo. ArgoCD watches that repo and auto-deploys.
 
-This repo's CI (`docker.yml`) builds images and pushes to GHCR. ArgoCD Image Updater detects new tags and rolls out deployments automatically.
+This repo's CI (`docker.yml`) builds images and pushes to the local registry. ArgoCD Image Updater detects new tags and rolls out deployments automatically.
 
 See `cassandra-k8s/docs/setup.md` for the full setup guide.
 
@@ -264,10 +264,6 @@ docker compose build --no-cache
 docker compose up -d
 # API at http://localhost:9080
 ```
-
-### Legacy k8s (manual apply)
-
-The `k8s/` directory in this repo is kept for reference but is no longer the source of truth. The gitops repo is canonical.
 
 ## Testing
 
