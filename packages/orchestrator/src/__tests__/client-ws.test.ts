@@ -18,6 +18,11 @@ function createMockBridge() {
     sendCompact: vi.fn().mockReturnValue(true),
     sendSteer: vi.fn().mockReturnValue(true),
     sendForkAndSteer: vi.fn().mockReturnValue(true),
+    sendRewind: vi.fn().mockReturnValue(true),
+    sendSetOptions: vi.fn().mockReturnValue(true),
+    sendPermissionResponse: vi.fn().mockReturnValue(true),
+    sendGetCommands: vi.fn().mockReturnValue(true),
+    waitForCommandsResult: vi.fn().mockResolvedValue({ commands: [] }),
     isConnected: vi.fn().mockReturnValue(true),
     close: vi.fn(),
   });
@@ -250,6 +255,31 @@ describe("Client WebSocket", () => {
       expect(frame.context_tokens).toBe(12345);
       ws.close();
     });
+
+    it("forwards permission_request events to subscribed clients", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      sessions.updateStatus("s1", "idle");
+
+      const ws = await connectWs(port);
+      const subPromise = waitForFrame(ws, (f) => f.type === "subscribed");
+      sendFrame(ws, { type: "subscribe", session_id: "s1" });
+      await subPromise;
+
+      const permissionPromise = waitForFrame(ws, (f) => f.type === "permission_request");
+      bridge.emit("permission_request:s1", {
+        tool_name: "Write",
+        tool_use_id: "toolu_123",
+        input: { file_path: "/tmp/file.ts" },
+      });
+      const frame = await permissionPromise;
+
+      expect(frame.type).toBe("permission_request");
+      expect(frame.session_id).toBe("s1");
+      expect(frame.tool_name).toBe("Write");
+      expect(frame.tool_use_id).toBe("toolu_123");
+      expect(frame.input).toEqual({ file_path: "/tmp/file.ts" });
+      ws.close();
+    });
   });
 
   describe("unsubscribe", () => {
@@ -472,6 +502,133 @@ describe("Client WebSocket", () => {
       expect(frame.type).toBe("ack");
       expect(frame.ok).toBe(true);
       expect(bridge.sendCompact).toHaveBeenCalledWith("s1", "Be concise", "req-compact");
+      ws.close();
+    });
+  });
+
+  describe("rewind", () => {
+    it("dispatches rewind to bridge and returns ack", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      sessions.updateStatus("s1", "idle");
+
+      const ws = await connectWs(port);
+      const responsePromise = waitForFrame(ws);
+      sendFrame(ws, {
+        type: "rewind",
+        session_id: "s1",
+        user_message_uuid: "user-msg-1",
+        request_id: "req-rewind",
+      });
+      const frame = await responsePromise;
+
+      expect(frame.type).toBe("ack");
+      expect(frame.ok).toBe(true);
+      expect(bridge.sendRewind).toHaveBeenCalledWith("s1", "user-msg-1", "req-rewind", expect.any(String));
+      ws.close();
+    });
+  });
+
+  describe("set_options", () => {
+    it("dispatches set_options to bridge and returns ack", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+
+      const ws = await connectWs(port);
+      const responsePromise = waitForFrame(ws);
+      sendFrame(ws, {
+        type: "set_options",
+        session_id: "s1",
+        model: "opus",
+        max_thinking_tokens: 2048,
+        compact_instructions: "Only summarize architecture",
+        permission_mode: "default",
+        request_id: "req-options",
+      });
+      const frame = await responsePromise;
+
+      expect(frame.type).toBe("ack");
+      expect(frame.ok).toBe(true);
+      expect(bridge.sendSetOptions).toHaveBeenCalledWith("s1", {
+        model: "opus",
+        maxThinkingTokens: 2048,
+        compactInstructions: "Only summarize architecture",
+        permissionMode: "default",
+        requestId: "req-options",
+        traceId: expect.any(String),
+      });
+      ws.close();
+    });
+  });
+
+  describe("permission_response", () => {
+    it("dispatches permission_response to bridge and returns ack", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+
+      const ws = await connectWs(port);
+      const responsePromise = waitForFrame(ws);
+      sendFrame(ws, {
+        type: "permission_response",
+        session_id: "s1",
+        tool_use_id: "toolu_123",
+        behavior: "allow",
+        message: "approved",
+        updated_input: { overwrite: true },
+        request_id: "req-perm",
+      });
+      const frame = await responsePromise;
+
+      expect(frame.type).toBe("ack");
+      expect(frame.ok).toBe(true);
+      expect(bridge.sendPermissionResponse).toHaveBeenCalledWith(
+        "s1",
+        "toolu_123",
+        "allow",
+        "approved",
+        { overwrite: true },
+      );
+      ws.close();
+    });
+  });
+
+  describe("get_commands", () => {
+    it("dispatches get_commands and forwards the result", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      bridge.waitForCommandsResult.mockResolvedValueOnce({
+        commands: ["/clear", "/resume"],
+      });
+
+      const ws = await connectWs(port);
+      const responsePromise = waitForFrame(ws, (f) => f.type === "commands_result");
+      sendFrame(ws, {
+        type: "get_commands",
+        session_id: "s1",
+        request_id: "req-commands",
+      });
+      const frame = await responsePromise;
+
+      expect(bridge.sendGetCommands).toHaveBeenCalledWith("s1", "req-commands", expect.any(String));
+      expect(bridge.waitForCommandsResult).toHaveBeenCalledWith("s1", "req-commands");
+      expect(frame.type).toBe("commands_result");
+      expect(frame.session_id).toBe("s1");
+      expect(frame.commands).toEqual(["/clear", "/resume"]);
+      ws.close();
+    });
+
+    it("falls back to an empty commands list when the bridge times out", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      bridge.waitForCommandsResult.mockRejectedValueOnce(new Error("timed out"));
+
+      const ws = await connectWs(port);
+      const responsePromise = waitForFrame(ws, (f) => f.type === "commands_result");
+      sendFrame(ws, {
+        type: "get_commands",
+        session_id: "s1",
+        request_id: "req-commands-timeout",
+      });
+      const frame = await responsePromise;
+
+      expect(frame.type).toBe("commands_result");
+      expect(frame.session_id).toBe("s1");
+      expect(frame.commands).toEqual([]);
       ws.close();
     });
   });

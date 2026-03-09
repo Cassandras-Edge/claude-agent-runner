@@ -167,6 +167,24 @@ function collectFrames(ws: WebSocket, count: number, timeoutMs = 3000): Promise<
   });
 }
 
+function expectNoFrame(ws: WebSocket, predicate: (frame: any) => boolean, timeoutMs = 200): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeListener("message", onMsg);
+      resolve();
+    }, timeoutMs);
+    const onMsg = (data: Buffer) => {
+      const frame = JSON.parse(data.toString());
+      if (predicate(frame)) {
+        clearTimeout(timer);
+        ws.removeListener("message", onMsg);
+        reject(new Error(`Unexpected frame: ${JSON.stringify(frame)}`));
+      }
+    };
+    ws.on("message", onMsg);
+  });
+}
+
 // Small sleep for event propagation
 const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 
@@ -551,6 +569,104 @@ describe("Client WS Integration", () => {
       await tick(100);
       expect(h.sessions.get("s1")!.status).toBe("stopped");
 
+      client.close();
+    });
+  });
+
+  describe("client reconnect", () => {
+    it("allows a new client to reconnect and resubscribe to a live session", async () => {
+      h.sessions.create("s1", "container-1", 0, { model: "sonnet" });
+
+      const runner = new FakeRunner(h.bridgePort, "s1");
+      await runner.connect();
+      await tick();
+
+      const client1 = await connectClient(h.httpPort);
+      const firstSub = waitFor(client1, (f) => f.type === "subscribed");
+      send(client1, { type: "subscribe", session_id: "s1" });
+      await firstSub;
+      client1.close();
+      await tick(100);
+
+      const client2 = await connectClient(h.httpPort);
+      const secondSub = waitFor(client2, (f) => f.type === "subscribed");
+      send(client2, { type: "subscribe", session_id: "s1" });
+      const subFrame = await secondSub;
+      expect(subFrame.status).toBe("ready");
+
+      const eventPromise = waitFor(client2, (f) => f.type === "event");
+      runner.sendEvent({ type: "assistant", content: [{ type: "text", text: "still here" }] });
+      const eventFrame = await eventPromise;
+      expect(eventFrame.event.content[0].text).toBe("still here");
+
+      runner.close();
+      client2.close();
+    });
+  });
+
+  describe("runner replacement", () => {
+    it("keeps the session live when a replacement runner reconnects before the old socket closes", async () => {
+      h.sessions.create("s1", "container-1", 0, { model: "sonnet" });
+
+      const runner1 = new FakeRunner(h.bridgePort, "s1");
+      await runner1.connect();
+      await tick();
+
+      const client = await connectClient(h.httpPort);
+      const subAck = waitFor(client, (f) => f.type === "subscribed");
+      send(client, { type: "subscribe", session_id: "s1" });
+      await subAck;
+
+      const runner2 = new FakeRunner(h.bridgePort, "s1");
+      await runner2.connect();
+      await tick();
+
+      const busyPromise = waitFor(client, (f) => f.type === "status" && f.status === "busy");
+      runner2.sendStatus("busy");
+      await busyPromise;
+      expect(h.sessions.get("s1")!.status).toBe("busy");
+
+      runner1.close();
+      await expect(expectNoFrame(client, (f) => f.type === "status" && f.status === "stopped")).resolves.toBeUndefined();
+      expect(h.sessions.get("s1")!.status).toBe("busy");
+
+      const eventPromise = waitFor(client, (f) => f.type === "event");
+      runner2.sendEvent({ type: "assistant", content: [{ type: "text", text: "replacement runner" }] });
+      const frame = await eventPromise;
+      expect(frame.event.content[0].text).toBe("replacement runner");
+
+      runner2.close();
+      client.close();
+    });
+  });
+
+  describe("frame sequencing", () => {
+    it("sends the subscribed status first and preserves later frame order", async () => {
+      h.sessions.create("s1", "container-1", 0, { model: "sonnet" });
+
+      const runner = new FakeRunner(h.bridgePort, "s1");
+      await runner.connect();
+      await tick();
+      runner.sendStatus("busy");
+      await tick();
+
+      const client = await connectClient(h.httpPort);
+      const subAck = waitFor(client, (f) => f.type === "subscribed");
+      send(client, { type: "subscribe", session_id: "s1" });
+      const subFrame = await subAck;
+      expect(subFrame.status).toBe("busy");
+
+      const framesPromise = collectFrames(client, 2);
+      runner.sendStatus("ready");
+      runner.sendEvent({ type: "assistant", content: [{ type: "text", text: "ordered" }] });
+      const frames = await framesPromise;
+
+      expect(frames[0].type).toBe("status");
+      expect(frames[0].status).toBe("ready");
+      expect(frames[1].type).toBe("event");
+      expect(frames[1].event.content[0].text).toBe("ordered");
+
+      runner.close();
       client.close();
     });
   });

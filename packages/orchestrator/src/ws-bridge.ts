@@ -182,7 +182,16 @@ export class WsBridge extends EventEmitter {
       ws.on("close", () => {
         const sid = ws._sessionId;
         if (sid) {
-          logger.info("orchestrator.ws_bridge", "runner_disconnected", { session_id: sid });
+          const current = this.connections.get(sid);
+          const isActiveConnection = current === ws;
+          logger.info("orchestrator.ws_bridge", "runner_disconnected", {
+            session_id: sid,
+            active_connection: isActiveConnection,
+          });
+          if (!isActiveConnection) {
+            return;
+          }
+
           this.connections.delete(sid);
           const session = this.sessions.get(sid);
           if (session) {

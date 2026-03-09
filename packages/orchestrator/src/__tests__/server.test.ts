@@ -19,6 +19,7 @@ function createMockDocker() {
     cleanup: vi.fn().mockResolvedValue(undefined),
     ensureNetwork: vi.fn().mockResolvedValue(undefined),
     getContainerId: vi.fn().mockReturnValue("container-id-123"),
+    rekeySession: vi.fn().mockReturnValue(true),
   };
 }
 
@@ -42,6 +43,8 @@ function createMockBridge() {
     },
     sendMessage: vi.fn().mockReturnValue(true),
     sendShutdown: vi.fn(),
+    sendAdopt: vi.fn().mockReturnValue(true),
+    rekeyConnection: vi.fn().mockReturnValue(true),
     isConnected: vi.fn().mockReturnValue(true),
     close: vi.fn(),
   };
@@ -405,6 +408,140 @@ describe("Server Routes", () => {
       expect(json.code).toBe("invalid_request");
     });
 
+    it("creates a session successfully when no initial message is provided", async () => {
+      docker.spawn.mockImplementation(async (config: any) => {
+        setTimeout(() => {
+          sessions.updateStatus(config.sessionId, "ready");
+          bridge.emit(`status:${config.sessionId}`, "ready");
+        }, 0);
+        return "container-ready";
+      });
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions", {
+        workspace: "/tmp/workspace",
+        model: "sonnet",
+      });
+
+      expect(status).toBe(200);
+      expect(json.status).toBe("ready");
+      expect(json.session_id).toBeDefined();
+
+      const session = sessions.get(json.session_id)!;
+      expect(session.workspace).toBe("/tmp/workspace");
+      expect(session.status).toBe("ready");
+      expect(session.containerId).toBe("container-ready");
+      expect(tokenPool.get(json.session_id)).toBeDefined();
+    });
+
+    it("creates a session and returns the initial message result", async () => {
+      docker.spawn.mockImplementation(async (config: any) => {
+        setTimeout(() => {
+          sessions.updateStatus(config.sessionId, "ready");
+          bridge.emit(`status:${config.sessionId}`, "ready");
+        }, 0);
+        return "container-with-message";
+      });
+      bridge.sendMessage.mockImplementation((sessionId: string) => {
+        setTimeout(() => {
+          bridge.emit(`event:${sessionId}`, {
+            type: "assistant",
+            content: [{ type: "text", text: "draft response" }],
+          });
+          bridge.emit(`event:${sessionId}`, {
+            type: "result",
+            subtype: "success",
+            result: "final response",
+            usage: { input_tokens: 7, output_tokens: 3, cost_usd: 0.12, duration_ms: 45 },
+          });
+        }, 0);
+        return true;
+      });
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions", {
+        workspace: "/tmp/workspace",
+        model: "sonnet",
+        message: "say hello",
+      });
+
+      expect(status).toBe(200);
+      expect(json.result).toBe("final response");
+      expect(json.usage).toEqual({
+        input_tokens: 7,
+        output_tokens: 3,
+        cost_usd: 0.12,
+        duration_ms: 45,
+      });
+
+      const session = sessions.get(json.session_id)!;
+      expect(session.messageCount).toBe(1);
+      expect(session.totalUsage).toEqual({
+        input_tokens: 7,
+        output_tokens: 3,
+        cost_usd: 0.12,
+      });
+    });
+
+    it("uses the warm pool handoff path when a matching runner is available", async () => {
+      tokenPool.assign("warm-1");
+      bridge.sendAdopt.mockImplementation((_warmId: string, sessionId: string) => {
+        setTimeout(() => {
+          sessions.updateStatus(sessionId, "ready");
+          bridge.emit(`status:${sessionId}`, "ready");
+        }, 0);
+        return true;
+      });
+
+      const warmPool = {
+        adopt: vi.fn().mockReturnValue({
+          warmId: "warm-1",
+          containerId: "warm-container",
+          tokenIndex: 0,
+          status: "ready",
+          spawnedAt: new Date("2025-01-01T00:00:00Z"),
+          vault: "vault-a",
+          agentId: "agent-a",
+        }),
+      };
+
+      const warmApp = createServer({
+        sessions,
+        docker,
+        bridge,
+        tokenPool,
+        env: {} as Record<string, string>,
+        runnerImage: "claude-runner:test",
+        network: "test-net",
+        sessionsVolume: "test-sessions",
+        sessionsPath: tmpSessionsPath,
+        wsPort: 9999,
+        orchestratorWsUrl: "ws://localhost:9999",
+        messageTimeoutMs: 60_000,
+        maxActiveSessions: undefined,
+        startedAt: new Date("2025-01-01T00:00:00Z"),
+        warmPool: warmPool as any,
+      } as any);
+
+      const { status, json } = await jsonResponse(warmApp, "POST", "/sessions", {
+        vault: "vault-a",
+        agentId: "agent-a",
+        model: "opus",
+      });
+
+      expect(status).toBe(200);
+      expect(json.status).toBe("ready");
+      expect(warmPool.adopt).toHaveBeenCalledWith("vault-a", "agent-a");
+      expect(docker.spawn).not.toHaveBeenCalled();
+      expect(bridge.sendAdopt).toHaveBeenCalledWith(
+        "warm-1",
+        json.session_id,
+        expect.any(String),
+        expect.objectContaining({ vault: "vault-a", model: "opus" }),
+      );
+      expect(bridge.rekeyConnection).toHaveBeenCalledWith("warm-1", json.session_id);
+      expect(docker.rekeySession).toHaveBeenCalledWith("warm-1", json.session_id);
+      expect(sessions.get(json.session_id)!.containerId).toBe("warm-container");
+    });
+
     it("returns 429 when max active session capacity is reached and nothing is evictable", async () => {
       const cappedApp = createServer({
         sessions,
@@ -521,6 +658,65 @@ describe("Server Routes", () => {
       const json = await res.json();
       expect(res.status).toBe(400);
       expect(json.code).toBe("invalid_request");
+    });
+
+    it("returns the runner result for a successful follow-up message", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      sessions.updateStatus("s1", "ready");
+      bridge.sendMessage.mockImplementation((sessionId: string) => {
+        setTimeout(() => {
+          bridge.emit(`event:${sessionId}`, {
+            type: "assistant",
+            content: [{ type: "text", text: "partial" }],
+          });
+          bridge.emit(`event:${sessionId}`, {
+            type: "result",
+            subtype: "success",
+            result: "follow-up result",
+            usage: { input_tokens: 4, output_tokens: 2, cost_usd: 0.05, duration_ms: 22 },
+          });
+        }, 0);
+        return true;
+      });
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions/s1/messages", { message: "follow up" });
+
+      expect(status).toBe(200);
+      expect(json.result).toBe("follow-up result");
+      expect(json.usage).toEqual({
+        input_tokens: 4,
+        output_tokens: 2,
+        cost_usd: 0.05,
+        duration_ms: 22,
+      });
+      expect(sessions.get("s1")!.messageCount).toBe(1);
+      expect(sessions.get("s1")!.totalUsage).toEqual({
+        input_tokens: 4,
+        output_tokens: 2,
+        cost_usd: 0.05,
+      });
+    });
+
+    it("surfaces a non-success runner result as an agent_error response", async () => {
+      sessions.create("s1", "c1", 0, { model: "sonnet" });
+      sessions.updateStatus("s1", "ready");
+      bridge.sendMessage.mockImplementation((sessionId: string) => {
+        setTimeout(() => {
+          bridge.emit(`event:${sessionId}`, {
+            type: "result",
+            subtype: "error_max_turns",
+            errors: ["too many turns"],
+            usage: { input_tokens: 0, output_tokens: 0, cost_usd: 0, duration_ms: 10 },
+          });
+        }, 0);
+        return true;
+      });
+
+      const { status, json } = await jsonResponse(app, "POST", "/sessions/s1/messages", { message: "follow up" });
+
+      expect(status).toBe(500);
+      expect(json.code).toBe("agent_error");
+      expect(json.message).toContain("too many turns");
     });
   });
 
