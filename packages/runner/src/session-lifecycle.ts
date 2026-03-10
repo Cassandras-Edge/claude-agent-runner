@@ -57,7 +57,7 @@ export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSe
     ...(state.SYSTEM_PROMPT ? { systemPrompt: state.SYSTEM_PROMPT } : {}),
     ...(state.APPEND_SYSTEM_PROMPT ? { appendSystemPrompt: state.APPEND_SYSTEM_PROMPT } : {}),
     ...(state.MAX_TURNS !== undefined ? { maxTurns: state.MAX_TURNS } : {}),
-    ...(state.THINKING ? { maxThinkingTokens: 10000 } : {}),
+    maxThinkingTokens: state.THINKING ? 10000 : 0,
     cwd: state.WORKSPACE,
     includePartialMessages: true,
     persistSession: true,
