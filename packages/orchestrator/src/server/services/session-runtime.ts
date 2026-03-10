@@ -355,9 +355,11 @@ export async function getTranscriptResponse(ctx: AppContext, sessionId: string, 
     return { kind: "error" as const, body: { code: "session_not_found", message: "Session not found" } satisfies ErrorResponse, status: 404 };
   }
 
-  const transcriptPath = join(ctx.sessionsPath, "projects", "-workspace", `${session.id}.jsonl`);
+  // Transcript JSONL files are named by SDK session ID, not orchestrator session ID
+  const transcriptId = session.sdkSessionId || session.id;
+  const transcriptPath = join(ctx.sessionsPath, "projects", "-workspace", `${transcriptId}.jsonl`);
   if (!existsSync(transcriptPath)) {
-    logger.debug("orchestrator.api", "transcript_not_found", { session_id: session.id, path: transcriptPath });
+    logger.debug("orchestrator.api", "transcript_not_found", { session_id: session.id, sdk_session_id: session.sdkSessionId, path: transcriptPath });
     return { kind: "error" as const, body: { code: "session_not_found", message: "Transcript not yet available" } satisfies ErrorResponse, status: 404 };
   }
 
