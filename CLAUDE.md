@@ -239,7 +239,7 @@ See `.env.example` for the full list.
 - `:latest` on main pushes and version tags
 - `main-<sha>` on main pushes
 
-Images are pushed to the local registry (`172.20.0.161:30500`). ArgoCD Image Updater detects new tags and auto-deploys.
+Images are pushed to the local registry (`172.20.0.161:30500`) with `:latest` and `main-<sha>` tags. ArgoCD syncs Helm charts using `:latest` with `pullPolicy: Always`.
 
 ### What's NOT Automated
 
@@ -251,7 +251,7 @@ Images are pushed to the local registry (`172.20.0.161:30500`). ArgoCD Image Upd
 
 k8s manifests live in the **cassandra-k8s** repo. ArgoCD watches that repo and auto-deploys.
 
-This repo's CI (`docker.yml`) builds images and pushes to the local registry. ArgoCD Image Updater detects new tags and rolls out deployments automatically.
+This repo's CI (`docker.yml`) builds images and pushes `:latest` to the local registry. Pods pick up new images on next creation (`pullPolicy: Always`).
 
 See `cassandra-k8s/docs/setup.md` for the full setup guide.
 
