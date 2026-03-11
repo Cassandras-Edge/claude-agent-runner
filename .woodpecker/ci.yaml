@@ -27,7 +27,6 @@ steps:
         branch: main
     depends_on:
       - test
-      - docker
     environment:
       DOCKER_HOST: 'tcp://docker:2375'
     commands:
@@ -50,7 +49,6 @@ steps:
         branch: main
     depends_on:
       - test
-      - docker
     environment:
       DOCKER_HOST: 'tcp://docker:2375'
     commands:
