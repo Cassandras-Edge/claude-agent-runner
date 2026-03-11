@@ -13,16 +13,25 @@ steps:
 
   # ── Deploy: Docker images (push to main only) ──
 
+  - name: docker
+    image: docker:dind
+    detached: true
+    privileged: true
+    commands:
+      - dockerd --host=tcp://0.0.0.0:2375 --host=unix:///var/run/docker.sock --insecure-registry=172.20.0.161:30500
+
   - name: build-orchestrator
-    image: docker
+    image: docker:cli
     when:
       - event: push
         branch: main
     depends_on:
       - test
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - docker
+    environment:
+      DOCKER_HOST: 'tcp://docker:2375'
     commands:
+      - until docker info 2>/dev/null; do sleep 1; done
       - |
         SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
         REGISTRY=172.20.0.161:30500
@@ -35,15 +44,17 @@ steps:
         docker push $REGISTRY/claude-agent-runner/orchestrator:main-$SHORT_SHA
 
   - name: build-runner
-    image: docker
+    image: docker:cli
     when:
       - event: push
         branch: main
     depends_on:
       - test
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - docker
+    environment:
+      DOCKER_HOST: 'tcp://docker:2375'
     commands:
+      - until docker info 2>/dev/null; do sleep 1; done
       - |
         SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
         REGISTRY=172.20.0.161:30500
