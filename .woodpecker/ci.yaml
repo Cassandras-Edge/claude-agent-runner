@@ -13,53 +13,36 @@ steps:
 
   # ── Deploy: Docker images (push to main only) ──
 
-  - name: docker
-    image: docker:dind
-    detached: true
-    privileged: true
-    commands:
-      - dockerd --host=tcp://0.0.0.0:2375 --host=unix:///var/run/docker.sock --insecure-registry=172.20.0.161:30500
-
   - name: build-orchestrator
-    image: docker:cli
+    image: gcr.io/kaniko-project/executor:debug
     when:
       - event: push
         branch: main
     depends_on:
       - test
-    environment:
-      DOCKER_HOST: 'tcp://docker:2375'
     commands:
-      - until docker info 2>/dev/null; do sleep 1; done
-      - |
-        SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
-        REGISTRY=172.20.0.161:30500
-        docker build \
-          -f packages/orchestrator/Dockerfile \
-          -t $REGISTRY/claude-agent-runner/orchestrator:latest \
-          -t $REGISTRY/claude-agent-runner/orchestrator:main-$SHORT_SHA \
-          .
-        docker push $REGISTRY/claude-agent-runner/orchestrator:latest
-        docker push $REGISTRY/claude-agent-runner/orchestrator:main-$SHORT_SHA
+      - >
+        /kaniko/executor
+        --dockerfile=packages/orchestrator/Dockerfile
+        --context=.
+        --destination=172.20.0.161:30500/claude-agent-runner/orchestrator:latest
+        --destination=172.20.0.161:30500/claude-agent-runner/orchestrator:main-${CI_COMMIT_SHA:0:7}
+        --insecure
+        --cache=false
 
   - name: build-runner
-    image: docker:cli
+    image: gcr.io/kaniko-project/executor:debug
     when:
       - event: push
         branch: main
     depends_on:
       - test
-    environment:
-      DOCKER_HOST: 'tcp://docker:2375'
     commands:
-      - until docker info 2>/dev/null; do sleep 1; done
-      - |
-        SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
-        REGISTRY=172.20.0.161:30500
-        docker build \
-          -f packages/runner/Dockerfile \
-          -t $REGISTRY/claude-agent-runner/runner:latest \
-          -t $REGISTRY/claude-agent-runner/runner:main-$SHORT_SHA \
-          .
-        docker push $REGISTRY/claude-agent-runner/runner:latest
-        docker push $REGISTRY/claude-agent-runner/runner:main-$SHORT_SHA
+      - >
+        /kaniko/executor
+        --dockerfile=packages/runner/Dockerfile
+        --context=.
+        --destination=172.20.0.161:30500/claude-agent-runner/runner:latest
+        --destination=172.20.0.161:30500/claude-agent-runner/runner:main-${CI_COMMIT_SHA:0:7}
+        --insecure
+        --cache=false
