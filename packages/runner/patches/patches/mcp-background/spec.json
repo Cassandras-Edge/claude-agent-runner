@@ -8,7 +8,7 @@
       "type": "extract",
       "id": "task_id_fn",
       "scope": "global",
-      "pattern": "function ([\\w$]+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=\\w+\\.randomBytes\\(8\\)",
+      "pattern": "function ([\\w$]+)\\(\\w+\\)\\{let \\w+=\\w+\\(\\w+\\),\\w+=[\\w.]+\\(8\\),\\w+=\\w+;for",
       "store_as": "TASK_ID_FN"
     },
     {
@@ -22,7 +22,7 @@
       "type": "extract",
       "id": "output_path_fn",
       "scope": "global",
-      "pattern": "function ([\\w$]+)\\(\\w+\\)\\{return \\w+\\.join\\(\\w+\\(\\),`\\$\\{\\w+\\}\\.output`\\)",
+      "pattern": "function ([\\w$]+)\\(\\w+\\)\\{return [^}]+`\\$\\{\\w+\\}\\.output`",
       "store_as": "OUTPUT_PATH_FN"
     },
     {
@@ -43,7 +43,7 @@
       "type": "extract",
       "id": "mkdir_fn",
       "scope": "global",
-      "pattern": "async function ([\\w$]+)\\(\\)\\{await \\w+\\.mkdir\\(\\w+\\(\\),\\{recursive:!0\\}\\)\\}",
+      "pattern": "async function ([\\w$]+)\\(\\)\\{await [\\w.]+\\([\\w$]+\\(\\),\\{recursive:!0\\}\\)\\}",
       "store_as": "MKDIR_FN"
     },
     {

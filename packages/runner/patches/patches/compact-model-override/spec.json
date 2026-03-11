@@ -5,16 +5,22 @@
   "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
   "steps": [
     {
+      "type": "extract",
+      "id": "compact_ctx_var",
+      "scope": "global",
+      "pattern": "model:(\\w+)\\.options\\.mainLoopModel,toolChoice:void 0",
+      "store_as": "CTX_VAR"
+    },
+    {
       "type": "find_replace",
       "id": "override_compact_model",
-      "find": "model:R.options.mainLoopModel,toolChoice:void 0",
-      "replace": "model:(typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_MODEL)||R.options.mainLoopModel,toolChoice:void 0",
+      "find": "model:{{CTX_VAR}}.options.mainLoopModel,toolChoice:void 0",
+      "replace": "model:(typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_MODEL)||{{CTX_VAR}}.options.mainLoopModel,toolChoice:void 0",
       "mode": "literal",
       "expected_count": 1
     }
   ],
   "assertions": {
-    "pre": [{ "present": "model:R.options.mainLoopModel,toolChoice:void 0" }],
     "post": [{ "present": "RUNNER_COMPACT_MODEL" }]
   }
 }

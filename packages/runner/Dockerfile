@@ -78,8 +78,8 @@ RUN cp -r /usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor /opt/clau
 RUN node -e " \
   const fs = require('fs'); \
   let cli = fs.readFileSync('/opt/claude/cli-patched.js', 'utf8'); \
-  const before = 'if(o){if(!A_||p!==\"stream-json\")'; \
-  const after = 'if(o){if(p!==\"stream-json\")'; \
+  const before = 'if(a){if(!O6||B!==\"stream-json\")'; \
+  const after = 'if(a){if(B!==\"stream-json\")'; \
   if (!cli.includes(before)) { console.error('Pattern not found'); process.exit(1); } \
   cli = cli.replace(before, after); \
   fs.writeFileSync('/opt/claude/cli-patched.js', cli); \

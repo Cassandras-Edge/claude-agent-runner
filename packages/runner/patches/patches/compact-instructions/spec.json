@@ -5,10 +5,24 @@
   "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
   "steps": [
     {
+      "type": "extract",
+      "id": "compact_param",
+      "scope": "global",
+      "pattern": "if\\((\\w+)&&\\1\\.trim\\(\\)!==\"\"\\)\\w+\\+=`\\n\\nAdditional Instructions:",
+      "store_as": "COMPACT_PARAM"
+    },
+    {
+      "type": "extract",
+      "id": "compact_out",
+      "scope": "global",
+      "pattern": "if\\({{COMPACT_PARAM}}&&{{COMPACT_PARAM}}\\.trim\\(\\)!==\"\"\\)(\\w+)\\+=`\\n\\nAdditional Instructions:",
+      "store_as": "COMPACT_OUT"
+    },
+    {
       "type": "find_replace",
       "id": "merge_instructions",
-      "find": "if(_&&_.trim()!==\"\")T+=`\n\nAdditional Instructions:\n${_}`",
-      "replace": "var _ci=typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_INSTRUCTIONS||null;if(_ci&&_ci.startsWith(\"replace:\"))return _ci.slice(8);var _allInst=[_,_ci].filter(Boolean).join(\"\\n\\n\");if(_allInst.trim())T+=`\n\nAdditional Instructions:\n${_allInst}`",
+      "find": "if({{COMPACT_PARAM}}&&{{COMPACT_PARAM}}.trim()!==\"\"){{COMPACT_OUT}}+=`\n\nAdditional Instructions:\n${{{COMPACT_PARAM}}}`",
+      "replace": "var _ci=typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_INSTRUCTIONS||null;if(_ci&&_ci.startsWith(\"replace:\"))return _ci.slice(8);var _allInst=[{{COMPACT_PARAM}},_ci].filter(Boolean).join(\"\\n\\n\");if(_allInst.trim()){{COMPACT_OUT}}+=`\n\nAdditional Instructions:\n${_allInst}`",
       "mode": "literal",
       "expected_count": 2
     }
