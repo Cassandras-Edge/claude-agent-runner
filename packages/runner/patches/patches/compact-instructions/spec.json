@@ -2,13 +2,13 @@
   "id": "compact-instructions",
   "description": "Inject custom compact instructions from RUNNER_COMPACT_INSTRUCTIONS env var. replace: prefix swaps entire prompt, otherwise appends.",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
   "steps": [
     {
       "type": "find_replace",
       "id": "merge_instructions",
-      "find": "if(A&&A.trim()!==\"\")q+=`\n\nAdditional Instructions:\n${A}`",
-      "replace": "var _ci=typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_INSTRUCTIONS||null;if(_ci&&_ci.startsWith(\"replace:\"))return _ci.slice(8);var _allInst=[A,_ci].filter(Boolean).join(\"\\n\\n\");if(_allInst.trim())q+=`\n\nAdditional Instructions:\n${_allInst}`",
+      "find": "if(_&&_.trim()!==\"\")T+=`\n\nAdditional Instructions:\n${_}`",
+      "replace": "var _ci=typeof process!==\"undefined\"&&process.env&&process.env.RUNNER_COMPACT_INSTRUCTIONS||null;if(_ci&&_ci.startsWith(\"replace:\"))return _ci.slice(8);var _allInst=[_,_ci].filter(Boolean).join(\"\\n\\n\");if(_allInst.trim())T+=`\n\nAdditional Instructions:\n${_allInst}`",
       "mode": "literal",
       "expected_count": 2
     }

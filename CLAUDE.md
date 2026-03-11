@@ -70,7 +70,7 @@ The runner patches Claude Code's CLI/SDK at build time. **This is the most fragi
 
 ### Pinned Version
 
-Currently pinned to `@anthropic-ai/claude-code@2.1.63` (set in `packages/runner/Dockerfile` lines 5 and 42).
+Currently pinned to `@anthropic-ai/claude-code@2.1.72` (set in `packages/runner/Dockerfile` lines 5 and 42).
 
 ### Active Patches (in `packages/runner/patches/patches/`)
 
@@ -79,7 +79,6 @@ Currently pinned to `@anthropic-ai/claude-code@2.1.63` (set in `packages/runner/
 | `mcp-background` | All MCP tool calls get `run_in_background: true`, parallel via task registry |
 | `memory-ipc` | Unix socket IPC server for live context read/write (mutableMessages) |
 | `clear-resume` | `/clear` and `/resume` in SDK stream-json mode |
-| `no-sibling-abort` | Parallel tool calls complete independently (no sibling abort) |
 | `compact-instructions` | Custom compaction prompts via `RUNNER_COMPACT_INSTRUCTIONS` env var |
 | `compact-model-override` | Use a different model for compaction via `RUNNER_COMPACT_MODEL` env var (defaults to Sonnet 4.6) |
 

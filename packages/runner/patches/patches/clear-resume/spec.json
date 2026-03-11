@@ -2,7 +2,7 @@
   "id": "clear-resume",
   "description": "/clear and /resume commands in stream-json mode (SDK)",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
   "steps": [
     {
       "type": "extract",
@@ -56,7 +56,7 @@
       "id": "uuid_mod",
       "scope": "region",
       "anchor": "only prompt commands are supported in streaming mode",
-      "pattern": "uuid:(\\w+)\\(\\)",
+      "pattern": "uuid:(\\w+(?:\\.\\w+)?)\\(\\)",
       "store_as": "UUID_MOD"
     },
     {
