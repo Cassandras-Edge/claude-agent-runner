@@ -94,7 +94,7 @@ These are **version-specific string replacements** — they break if the minifie
 
 ### Upgrading CLI Version
 
-The `cli-version-check.yml` workflow handles this automatically (daily cron):
+The `cli-version-check.yaml` Woodpecker cron pipeline handles this automatically (daily cron):
 1. Checks npm for new `@anthropic-ai/claude-code` versions
 2. Dry-runs all patches against the new CLI
 3. If all pass: builds images, runs E2E test, creates auto-merge PR
@@ -225,14 +225,12 @@ See `.env.example` for the full list.
 
 ## CI/CD
 
-### Existing Workflows (`.github/workflows/`)
+### Woodpecker Pipelines (`.woodpecker/`)
 
-| Workflow | Trigger | What it does |
+| Pipeline | Trigger | What it does |
 |----------|---------|-------------|
-| `docker.yml` | Push to main, tags, PRs | Test → build + push to local registry (`172.20.0.161:30500`) |
-| `cli-version-check.yml` | Daily cron (9am UTC) + manual | Check for new CLI versions, test patches, auto-PR or auto-fix |
-| `claude.yml` | — | Claude Code action for PR reviews |
-| `claude-code-review.yml` | — | Claude Code PR review |
+| `ci.yaml` | Push to main, PRs | Test + type-check → build + push to local registry (`172.20.0.161:30500`) |
+| `cli-version-check.yaml` | Daily cron (9am UTC) | Check for new CLI versions, test patches, auto-PR or issue |
 
 ### Image Tags
 
@@ -251,7 +249,7 @@ Images are pushed to the local registry (`172.20.0.161:30500`) with `:latest` an
 
 k8s manifests live in the **cassandra-k8s** repo. ArgoCD watches that repo and auto-deploys.
 
-This repo's CI (`docker.yml`) builds images and pushes `:latest` to the local registry. Pods pick up new images on next creation (`pullPolicy: Always`).
+Woodpecker CI (`ci.yaml`) builds images and pushes `:latest` to the local registry. Pods pick up new images on next creation (`pullPolicy: Always`).
 
 See `cassandra-k8s/docs/setup.md` for the full setup guide.
 

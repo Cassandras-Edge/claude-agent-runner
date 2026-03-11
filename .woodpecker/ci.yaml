@@ -1,0 +1,56 @@
+when:
+  - event: [push, pull_request]
+
+steps:
+  # ── CI: tests + type-check ──
+
+  - name: test
+    image: node:22-slim
+    commands:
+      - npm ci
+      - npm run typecheck
+      - npm test
+
+  # ── Deploy: Docker images (push to main only) ──
+
+  - name: build-orchestrator
+    image: docker
+    when:
+      - event: push
+        branch: main
+    depends_on:
+      - test
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - |
+        SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
+        REGISTRY=172.20.0.161:30500
+        docker build \
+          -f packages/orchestrator/Dockerfile \
+          -t $REGISTRY/claude-agent-runner/orchestrator:latest \
+          -t $REGISTRY/claude-agent-runner/orchestrator:main-$SHORT_SHA \
+          .
+        docker push $REGISTRY/claude-agent-runner/orchestrator:latest
+        docker push $REGISTRY/claude-agent-runner/orchestrator:main-$SHORT_SHA
+
+  - name: build-runner
+    image: docker
+    when:
+      - event: push
+        branch: main
+    depends_on:
+      - test
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - |
+        SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-7)
+        REGISTRY=172.20.0.161:30500
+        docker build \
+          -f packages/runner/Dockerfile \
+          -t $REGISTRY/claude-agent-runner/runner:latest \
+          -t $REGISTRY/claude-agent-runner/runner:main-$SHORT_SHA \
+          .
+        docker push $REGISTRY/claude-agent-runner/runner:latest
+        docker push $REGISTRY/claude-agent-runner/runner:main-$SHORT_SHA
