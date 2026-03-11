@@ -48,5 +48,6 @@ steps:
         --destination=172.20.0.161:30500/claude-agent-runner/runner:main-${CI_COMMIT_SHA:0:7}
         --insecure
         --cache=true
+        --cache-copy-layers
         --cache-repo=172.20.0.161:30500/claude-agent-runner/runner-cache
         --insecure-registry=172.20.0.161:30500
