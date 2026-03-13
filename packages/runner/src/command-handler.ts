@@ -458,6 +458,16 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
       state.activeCompactInstructions = msg.compact_instructions;
       logger.info("runner.ws", "compact_instructions_override_set", { session_id: state.SESSION_ID });
     }
+    if (msg.effort) {
+      state.EFFORT = msg.effort;
+      // Effort is passed via session options on next session creation.
+      // Close session to pick up the new effort level.
+      if (state.session) {
+        state.session.close();
+        state.session = null;
+      }
+      logger.info("runner.ws", "effort_override_set", { session_id: state.SESSION_ID, effort: msg.effort });
+    }
     if (msg.permission_mode) {
       const newMode = msg.permission_mode;
       if (newMode !== state.PERMISSION_MODE) {
@@ -572,6 +582,64 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     return;
   }
 
+  if (msg.type === "mcp") {
+    const requestId = msg.request_id;
+    try {
+      if (!state.session) throw new Error("No active session");
+      const query = (state.session as any).query;
+
+      if (msg.action === "toggle") {
+        await query.toggleMcpServer(msg.serverName, msg.enabled ?? true);
+        logger.info("runner.ws", "mcp_server_toggled", {
+          session_id: state.SESSION_ID, server: msg.serverName, enabled: msg.enabled,
+        });
+      } else if (msg.action === "reconnect") {
+        await query.reconnectMcpServer(msg.serverName);
+        logger.info("runner.ws", "mcp_server_reconnected", {
+          session_id: state.SESSION_ID, server: msg.serverName,
+        });
+      } else if (msg.action === "status") {
+        const status = await query.mcpServerStatus();
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: "mcp_result",
+            session_id: state.SESSION_ID,
+            success: true,
+            data: status,
+            request_id: requestId,
+          }));
+        }
+        return;
+      }
+
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "mcp_result",
+          session_id: state.SESSION_ID,
+          success: true,
+          request_id: requestId,
+        }));
+      }
+    } catch (err) {
+      logger.warn("runner.ws", "mcp_command_failed", {
+        session_id: state.SESSION_ID,
+        action: msg.action,
+        server: msg.serverName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "mcp_result",
+          session_id: state.SESSION_ID,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          request_id: requestId,
+        }));
+      }
+    }
+    return;
+  }
+
   if (msg.type === "utility_query") {
     const requestId = msg.request_id;
     const traceId = msg.trace_id;
@@ -659,6 +727,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     if (cfg.appendSystemPrompt !== undefined) state.APPEND_SYSTEM_PROMPT = cfg.appendSystemPrompt;
     if (cfg.maxTurns !== undefined) state.MAX_TURNS = cfg.maxTurns;
     if (cfg.thinking !== undefined) state.THINKING = !!cfg.thinking;
+    if (cfg.effort !== undefined) state.EFFORT = cfg.effort;
     if (cfg.allowedTools !== undefined) state.ALLOWED_TOOLS = cfg.allowedTools || [];
     if (cfg.disallowedTools !== undefined) state.DISALLOWED_TOOLS = cfg.disallowedTools || [];
     if (cfg.compactInstructions !== undefined) state.COMPACT_INSTRUCTIONS = cfg.compactInstructions;

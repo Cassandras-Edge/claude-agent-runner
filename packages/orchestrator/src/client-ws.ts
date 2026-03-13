@@ -8,6 +8,7 @@ import type {
   ClientFrame,
   CompactFrame,
   GetCommandsFrame,
+  McpFrame,
   PermissionRequestFrame,
   PermissionResponseFrame,
   RenameFrame,
@@ -194,6 +195,10 @@ function handleFrame(ws: WebSocket, frame: ClientFrame, ctx: HandleContext): voi
 
     case "rename":
       handleRename(ws, frame as RenameFrame, ctx);
+      return;
+
+    case "mcp":
+      handleMcp(ws, frame as McpFrame, ctx);
       return;
 
     default:
@@ -518,7 +523,7 @@ function handleRewind(ws: WebSocket, frame: RewindFrame, ctx: HandleContext): vo
 // --- Set Options ---
 
 function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleContext): void {
-  const { session_id, model, max_thinking_tokens, compact_instructions, permission_mode } = frame;
+  const { session_id, model, max_thinking_tokens, compact_instructions, permission_mode, effort } = frame;
 
   const session = ctx.sessions.get(session_id);
   if (!session) {
@@ -531,6 +536,7 @@ function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleCont
     maxThinkingTokens: max_thinking_tokens,
     compactInstructions: compact_instructions,
     permissionMode: permission_mode,
+    effort,
     requestId: ctx.requestId,
     traceId: ctx.connectionId,
   });
@@ -541,6 +547,7 @@ function handleSetOptions(ws: WebSocket, frame: SetOptionsFrame, ctx: HandleCont
     model,
     max_thinking_tokens,
     permission_mode,
+    effort,
     ok: sent,
     request_id: ctx.requestId,
   });
@@ -591,6 +598,49 @@ function handleGetCommands(ws: WebSocket, frame: GetCommandsFrame, ctx: HandleCo
     sendFrame(ws, { type: "commands_result", session_id, commands: result.commands || [], request_id: ctx.requestId });
   }).catch(() => {
     sendFrame(ws, { type: "commands_result", session_id, commands: [], request_id: ctx.requestId });
+  });
+}
+
+// --- MCP Management ---
+
+function handleMcp(ws: WebSocket, frame: McpFrame, ctx: HandleContext): void {
+  const { session_id, action, server_name, enabled } = frame;
+
+  const session = ctx.sessions.get(session_id);
+  if (!session) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session not found", request_id: ctx.requestId });
+    return;
+  }
+
+  const sent = ctx.bridge.sendMcpCommand(session_id, action, server_name, {
+    enabled,
+    requestId: ctx.requestId,
+  });
+
+  if (!sent) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Runner not connected", request_id: ctx.requestId });
+    return;
+  }
+
+  // Wait for the runner's response and forward it
+  ctx.bridge.waitForMcpResult(session_id, ctx.requestId).then((result) => {
+    sendFrame(ws, {
+      type: "ack",
+      session_id,
+      ok: result.success,
+      request_id: ctx.requestId,
+      ...(!result.success ? { error: result.error } : {}),
+    } as any);
+  }).catch(() => {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "MCP command timed out", request_id: ctx.requestId });
+  });
+
+  logger.event("client-ws", "mcp_dispatched", {
+    session_id,
+    action,
+    server_name,
+    ok: sent,
+    request_id: ctx.requestId,
   });
 }
 

@@ -73,6 +73,7 @@ export interface SessionRequest {
   appendSystemPrompt?: string;
   maxTurns?: number;
   thinking?: boolean;
+  effort?: EffortLevel;
   allowedTools?: string[];
   disallowedTools?: string[];
   additionalDirectories?: string[];
@@ -397,6 +398,14 @@ export interface CommandsResultFrame extends WsCorrelation {
   commands: SlashCommandInfo[];
 }
 
+export interface McpResultFrame extends WsCorrelation {
+  type: "mcp_result";
+  session_id: string;
+  success: boolean;
+  data?: any;
+  error?: string;
+}
+
 export interface RunnerBackgroundCompleteMessage {
   type: "background_complete";
   session_id: string;
@@ -416,6 +425,7 @@ export type RunnerMessage =
   | PermissionRequestFrame
   | RunnerUtilityQueryResultMessage
   | CommandsResultFrame
+  | McpResultFrame
   | RunnerBackgroundCompleteMessage;
 
 /** Orchestrator -> Runner: send a message to the agent */
@@ -478,12 +488,15 @@ export interface OrchestratorRewindCommand extends WsCorrelation {
   user_message_uuid: string;
 }
 
+export type EffortLevel = "low" | "medium" | "high" | "max";
+
 export interface OrchestratorSetOptionsCommand extends WsCorrelation {
   type: "set_options";
   model?: string;
   maxThinkingTokens?: number;
   compact_instructions?: string;
   permission_mode?: string;
+  effort?: EffortLevel;
 }
 
 export interface OrchestratorPermissionResponseCommand extends WsCorrelation {
@@ -502,6 +515,14 @@ export interface OrchestratorGetCommandsCommand extends WsCorrelation {
 export interface OrchestratorRenameCommand extends WsCorrelation {
   type: "rename";
   title: string;
+}
+
+/** Orchestrator -> Runner: manage MCP servers at runtime */
+export interface OrchestratorMcpCommand extends WsCorrelation {
+  type: "mcp";
+  action: "toggle" | "reconnect" | "status";
+  serverName: string;
+  enabled?: boolean;
 }
 
 export interface OrchestratorUtilityQueryCommand extends WsCorrelation {
@@ -526,6 +547,7 @@ export interface OrchestratorAdoptCommand {
     appendSystemPrompt?: string;
     maxTurns?: number;
     thinking?: boolean;
+    effort?: EffortLevel;
     allowedTools?: string[];
     disallowedTools?: string[];
     compactInstructions?: string;
@@ -548,7 +570,8 @@ export type OrchestratorCommand =
   | OrchestratorGetCommandsCommand
   | OrchestratorAdoptCommand
   | OrchestratorUtilityQueryCommand
-  | OrchestratorRenameCommand;
+  | OrchestratorRenameCommand
+  | OrchestratorMcpCommand;
 
 // --- Client <-> Orchestrator WS Protocol ---
 
@@ -619,6 +642,16 @@ export interface SetOptionsFrame {
   max_thinking_tokens?: number;
   compact_instructions?: string;
   permission_mode?: string;
+  effort?: EffortLevel;
+  request_id?: string;
+}
+
+export interface McpFrame {
+  type: "mcp";
+  session_id: string;
+  action: "toggle" | "reconnect" | "status";
+  server_name: string;
+  enabled?: boolean;
   request_id?: string;
 }
 
@@ -650,6 +683,7 @@ export type ClientFrame =
   | SetOptionsFrame
   | GetCommandsFrame
   | RenameFrame
+  | McpFrame
   | PingFrame;
 
 export interface AckFrame {

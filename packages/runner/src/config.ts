@@ -26,6 +26,7 @@ export function initConfig(): void {
   state.THINKING = process.env.RUNNER_THINKING === "true";
   state.ALLOWED_TOOLS = process.env.RUNNER_ALLOWED_TOOLS ? JSON.parse(process.env.RUNNER_ALLOWED_TOOLS) : [];
   state.DISALLOWED_TOOLS = process.env.RUNNER_DISALLOWED_TOOLS ? JSON.parse(process.env.RUNNER_DISALLOWED_TOOLS) : [];
+  state.EFFORT = (process.env.RUNNER_EFFORT as any) || undefined;
   state.COMPACT_INSTRUCTIONS = process.env.RUNNER_COMPACT_INSTRUCTIONS;
   state.PERMISSION_MODE = process.env.RUNNER_PERMISSION_MODE || "bypassPermissions";
   state.MCP_SERVERS = process.env.RUNNER_MCP_SERVERS ? JSON.parse(process.env.RUNNER_MCP_SERVERS) : {};

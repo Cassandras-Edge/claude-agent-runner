@@ -161,6 +161,15 @@ export class WsBridge extends EventEmitter {
             break;
           }
 
+          case "mcp_result":
+            logger.debug("orchestrator.ws_bridge", "runner_mcp_result", {
+              session_id: sessionId,
+              success: (msg as any).success,
+              request_id: (msg as any).request_id,
+            });
+            this.emit(`mcp_result:${sessionId}:${(msg as any).request_id}`, msg);
+            break;
+
           case "utility_query_result":
             logger.debug("orchestrator.ws_bridge", "runner_utility_query_result", {
               session_id: sessionId,
@@ -422,6 +431,7 @@ export class WsBridge extends EventEmitter {
       maxThinkingTokens?: number;
       compactInstructions?: string;
       permissionMode?: string;
+      effort?: string;
       requestId?: string;
       traceId?: string;
     },
@@ -437,6 +447,7 @@ export class WsBridge extends EventEmitter {
       ...(options.maxThinkingTokens !== undefined ? { maxThinkingTokens: options.maxThinkingTokens } : {}),
       ...(options.compactInstructions ? { compact_instructions: options.compactInstructions } : {}),
       ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}),
+      ...(options.effort ? { effort: options.effort } : {}),
       request_id: options.requestId,
       trace_id: options.traceId,
     }));
@@ -506,6 +517,28 @@ export class WsBridge extends EventEmitter {
     });
   }
 
+  sendMcpCommand(
+    sessionId: string,
+    action: "toggle" | "reconnect" | "status",
+    serverName: string,
+    options?: { enabled?: boolean; requestId?: string },
+  ): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_mcp", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "mcp",
+      action,
+      serverName,
+      ...(options?.enabled !== undefined ? { enabled: options.enabled } : {}),
+      request_id: options?.requestId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_mcp_command", { session_id: sessionId, action, serverName });
+    return true;
+  }
+
   sendRename(sessionId: string, title: string, requestId?: string): boolean {
     const ws = this.connections.get(sessionId);
     if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -519,6 +552,22 @@ export class WsBridge extends EventEmitter {
     }));
     logger.debug("orchestrator.ws_bridge", "sent_rename_command", { session_id: sessionId, title });
     return true;
+  }
+
+  waitForMcpResult(sessionId: string, requestId: string, timeoutMs = 10000): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const eventKey = `mcp_result:${sessionId}:${requestId}`;
+      const timer = setTimeout(() => {
+        this.removeListener(eventKey, onResult);
+        reject(new Error("Timed out waiting for MCP result"));
+      }, timeoutMs);
+      const onResult = (msg: any) => {
+        clearTimeout(timer);
+        this.removeListener(eventKey, onResult);
+        resolve(msg);
+      };
+      this.on(eventKey, onResult);
+    });
   }
 
   /** Rekey a connection from one session ID to another (used by warm pool adoption). */
