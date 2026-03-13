@@ -2,7 +2,7 @@
   "id": "mcp-background",
   "description": "Add run_in_background support to all MCP tool calls using AppState.tasks",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72", "2.1.74"],
   "steps": [
     {
       "type": "extract",

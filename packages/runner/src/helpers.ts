@@ -66,6 +66,9 @@ export function buildClaudeChildEnv(forceCompact = false): Record<string, string
     ...(COMPACT_MODEL ? { RUNNER_COMPACT_MODEL: COMPACT_MODEL } : {}),
     CLAUDE_MEM_SOCKET: state.MEM_SOCKET_PATH,
     ENABLE_TOOL_SEARCH: "false",
+    ...(process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS
+      ? { CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS: process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS }
+      : {}),
   };
 }
 

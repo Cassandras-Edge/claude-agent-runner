@@ -540,6 +540,38 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     return;
   }
 
+  if (msg.type === "rename") {
+    const requestId = msg.request_id;
+    try {
+      if (state.session) {
+        await (state.session as any).query.rename(msg.title);
+        logger.info("runner.ws", "session_renamed", { session_id: state.SESSION_ID, title: msg.title });
+      }
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "status",
+          session_id: state.SESSION_ID,
+          status: state.isBusy ? "busy" : "ready",
+          request_id: requestId,
+        }));
+      }
+    } catch (err) {
+      logger.warn("runner.ws", "rename_failed", {
+        session_id: state.SESSION_ID,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "status",
+          session_id: state.SESSION_ID,
+          status: state.isBusy ? "busy" : "ready",
+          request_id: requestId,
+        }));
+      }
+    }
+    return;
+  }
+
   if (msg.type === "utility_query") {
     const requestId = msg.request_id;
     const traceId = msg.trace_id;

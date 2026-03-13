@@ -63,6 +63,7 @@ export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSe
     persistSession: true,
     enableFileCheckpointing: true,
     allowDangerouslySkipPermissions: isBypass,
+    agentProgressSummaries: true,
     settingSources: ["project"],
     ...(ADDITIONAL_DIRECTORIES.length > 0 ? { additionalDirectories: ADDITIONAL_DIRECTORIES } : {}),
     ...(Object.keys(state.MCP_SERVERS).length > 0 ? { mcpServers: state.MCP_SERVERS } : {}),

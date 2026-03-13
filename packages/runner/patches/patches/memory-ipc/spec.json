@@ -2,7 +2,7 @@
   "id": "memory-ipc",
   "description": "Expose mutableMessages + Unix socket IPC server for live context surgery",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72", "2.1.74"],
   "steps": [
     {
       "type": "extract",

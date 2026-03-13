@@ -498,6 +498,12 @@ export interface OrchestratorGetCommandsCommand extends WsCorrelation {
   type: "get_commands";
 }
 
+/** Orchestrator -> Runner: rename the underlying SDK session */
+export interface OrchestratorRenameCommand extends WsCorrelation {
+  type: "rename";
+  title: string;
+}
+
 export interface OrchestratorUtilityQueryCommand extends WsCorrelation {
   type: "utility_query";
   prompt: string;
@@ -541,7 +547,8 @@ export type OrchestratorCommand =
   | OrchestratorPermissionResponseCommand
   | OrchestratorGetCommandsCommand
   | OrchestratorAdoptCommand
-  | OrchestratorUtilityQueryCommand;
+  | OrchestratorUtilityQueryCommand
+  | OrchestratorRenameCommand;
 
 // --- Client <-> Orchestrator WS Protocol ---
 
@@ -621,6 +628,13 @@ export interface GetCommandsFrame {
   request_id?: string;
 }
 
+export interface RenameFrame {
+  type: "rename";
+  session_id: string;
+  title: string;
+  request_id?: string;
+}
+
 export interface PingFrame {
   type: "ping";
 }
@@ -635,6 +649,7 @@ export type ClientFrame =
   | RewindFrame
   | SetOptionsFrame
   | GetCommandsFrame
+  | RenameFrame
   | PingFrame;
 
 export interface AckFrame {

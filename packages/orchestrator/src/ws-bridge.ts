@@ -506,6 +506,21 @@ export class WsBridge extends EventEmitter {
     });
   }
 
+  sendRename(sessionId: string, title: string, requestId?: string): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "session_not_connected_for_rename", { session_id: sessionId });
+      return false;
+    }
+    ws.send(JSON.stringify({
+      type: "rename",
+      title,
+      request_id: requestId,
+    }));
+    logger.debug("orchestrator.ws_bridge", "sent_rename_command", { session_id: sessionId, title });
+    return true;
+  }
+
   /** Rekey a connection from one session ID to another (used by warm pool adoption). */
   rekeyConnection(oldId: string, newId: string): boolean {
     const ws = this.connections.get(oldId) as (WebSocket & { _sessionId?: string }) | undefined;

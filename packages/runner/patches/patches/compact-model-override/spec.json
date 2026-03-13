@@ -2,7 +2,7 @@
   "id": "compact-model-override",
   "description": "Override the model used for compaction via RUNNER_COMPACT_MODEL env var. Falls back to session model if not set.",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72", "2.1.74"],
   "steps": [
     {
       "type": "extract",

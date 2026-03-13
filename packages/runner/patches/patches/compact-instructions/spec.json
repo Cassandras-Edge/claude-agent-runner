@@ -2,7 +2,7 @@
   "id": "compact-instructions",
   "description": "Inject custom compact instructions from RUNNER_COMPACT_INSTRUCTIONS env var. replace: prefix swaps entire prompt, otherwise appends.",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71", "2.1.72"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72", "2.1.74"],
   "steps": [
     {
       "type": "extract",

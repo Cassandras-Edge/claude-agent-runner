@@ -2,7 +2,7 @@ FROM node:22-alpine AS patcher
 
 # Install bun (runs patch-all.js) and Claude Code (source for JS extraction)
 RUN apk add --no-cache bash && \
-    npm install -g bun @anthropic-ai/claude-code@2.1.72 && \
+    npm install -g bun @anthropic-ai/claude-code@2.1.74 && \
     npm cache clean --force
 
 # Copy patch files
@@ -39,7 +39,7 @@ FROM node:22-alpine
 RUN apk add --no-cache git curl bash openssh-client
 
 # Install Claude Code CLI globally (required by agent SDK)
-RUN npm install -g @anthropic-ai/claude-code@2.1.72 && npm cache clean --force
+RUN npm install -g @anthropic-ai/claude-code@2.1.74 && npm cache clean --force
 
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
@@ -74,14 +74,15 @@ RUN cp -r /usr/local/lib/node_modules/@anthropic-ai/claude-code/vendor /opt/clau
 
 # Patch CLI: relax --include-partial-messages to work without --print.
 # The underlying stream_event yield code works in interactive mode — the
-# guard is overly restrictive. Remove the `!s||` (--print check) from the guard.
+# guard is overly restrictive. Remove the `!VAR||` (--print check) from the guard.
+# Uses regex to handle minified variable name changes across versions.
 RUN node -e " \
   const fs = require('fs'); \
   let cli = fs.readFileSync('/opt/claude/cli-patched.js', 'utf8'); \
-  const before = 'if(a){if(!O6||B!==\"stream-json\")'; \
-  const after = 'if(a){if(B!==\"stream-json\")'; \
-  if (!cli.includes(before)) { console.error('Pattern not found'); process.exit(1); } \
-  cli = cli.replace(before, after); \
+  const re = /if\((\w+)\)\{if\(!\w+\|\|(\w+)!==\"stream-json\"\)/; \
+  const m = cli.match(re); \
+  if (!m) { console.error('Pattern not found'); process.exit(1); } \
+  cli = cli.replace(re, 'if(' + m[1] + '){if(' + m[2] + '!==\"stream-json\")'); \
   fs.writeFileSync('/opt/claude/cli-patched.js', cli); \
   console.log('Patched: removed --print requirement for --include-partial-messages'); \
 "

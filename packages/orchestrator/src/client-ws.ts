@@ -10,6 +10,7 @@ import type {
   GetCommandsFrame,
   PermissionRequestFrame,
   PermissionResponseFrame,
+  RenameFrame,
   RewindFrame,
   RunnerEvent,
   SendFrame,
@@ -189,6 +190,10 @@ function handleFrame(ws: WebSocket, frame: ClientFrame, ctx: HandleContext): voi
 
     case "get_commands":
       handleGetCommands(ws, frame as GetCommandsFrame, ctx);
+      return;
+
+    case "rename":
+      handleRename(ws, frame as RenameFrame, ctx);
       return;
 
     default:
@@ -586,6 +591,32 @@ function handleGetCommands(ws: WebSocket, frame: GetCommandsFrame, ctx: HandleCo
     sendFrame(ws, { type: "commands_result", session_id, commands: result.commands || [], request_id: ctx.requestId });
   }).catch(() => {
     sendFrame(ws, { type: "commands_result", session_id, commands: [], request_id: ctx.requestId });
+  });
+}
+
+// --- Rename ---
+
+function handleRename(ws: WebSocket, frame: RenameFrame, ctx: HandleContext): void {
+  const { session_id, title } = frame;
+
+  const session = ctx.sessions.get(session_id);
+  if (!session) {
+    sendFrame(ws, { type: "ack", session_id, ok: false, error: "Session not found", request_id: ctx.requestId });
+    return;
+  }
+
+  // Update local DB name
+  ctx.sessions.rename(session_id, title, ctx.tenantId);
+
+  // Forward to runner to rename the underlying SDK session
+  const sent = ctx.bridge.sendRename(session_id, title, ctx.requestId);
+  sendFrame(ws, { type: "ack", session_id, ok: true, request_id: ctx.requestId });
+
+  logger.event("client-ws", "rename_dispatched", {
+    session_id,
+    title,
+    runner_notified: sent,
+    request_id: ctx.requestId,
   });
 }
 
