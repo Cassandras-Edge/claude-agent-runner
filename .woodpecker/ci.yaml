@@ -30,6 +30,7 @@ steps:
         --insecure
         --cache=true
         --cache-repo=172.20.0.161:30500/claude-agent-runner/orchestrator-cache
+        --compressed-caching=false
         --insecure-registry=172.20.0.161:30500
 
   - name: build-runner
@@ -50,4 +51,5 @@ steps:
         --cache=true
         --cache-copy-layers
         --cache-repo=172.20.0.161:30500/claude-agent-runner/runner-cache
+        --compressed-caching=false
         --insecure-registry=172.20.0.161:30500
