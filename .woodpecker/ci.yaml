@@ -11,10 +11,10 @@ steps:
       - npm run typecheck
       - npm test
 
-  # ── Deploy: Docker images (push to main only) ──
+  # ── Deploy: Docker images via BuildKit (push to main only) ──
 
   - name: build-orchestrator
-    image: gcr.io/kaniko-project/executor:debug
+    image: moby/buildkit:v0.21.1
     when:
       - event: push
         branch: main
@@ -22,19 +22,16 @@ steps:
       - test
     commands:
       - >
-        /kaniko/executor
-        --dockerfile=packages/orchestrator/Dockerfile
-        --context=.
-        --destination=172.20.0.161:30500/claude-agent-runner/orchestrator:latest
-        --destination=172.20.0.161:30500/claude-agent-runner/orchestrator:main-${CI_COMMIT_SHA:0:7}
-        --insecure
-        --cache=true
-        --cache-repo=172.20.0.161:30500/claude-agent-runner/orchestrator-cache
-        --compressed-caching=false
-        --insecure-registry=172.20.0.161:30500
+        buildctl
+        --addr tcp://buildkitd.buildkitd.svc.cluster.local:1234
+        build
+        --frontend dockerfile.v0
+        --local context=.
+        --local dockerfile=packages/orchestrator
+        --output type=image,"name=172.20.0.161:30500/claude-agent-runner/orchestrator:latest,172.20.0.161:30500/claude-agent-runner/orchestrator:main-${CI_COMMIT_SHA:0:7}",push=true,registry.insecure=true
 
   - name: build-runner
-    image: gcr.io/kaniko-project/executor:debug
+    image: moby/buildkit:v0.21.1
     when:
       - event: push
         branch: main
@@ -42,14 +39,10 @@ steps:
       - test
     commands:
       - >
-        /kaniko/executor
-        --dockerfile=packages/runner/Dockerfile
-        --context=.
-        --destination=172.20.0.161:30500/claude-agent-runner/runner:latest
-        --destination=172.20.0.161:30500/claude-agent-runner/runner:main-${CI_COMMIT_SHA:0:7}
-        --insecure
-        --cache=true
-        --cache-copy-layers
-        --cache-repo=172.20.0.161:30500/claude-agent-runner/runner-cache
-        --compressed-caching=false
-        --insecure-registry=172.20.0.161:30500
+        buildctl
+        --addr tcp://buildkitd.buildkitd.svc.cluster.local:1234
+        build
+        --frontend dockerfile.v0
+        --local context=.
+        --local dockerfile=packages/runner
+        --output type=image,"name=172.20.0.161:30500/claude-agent-runner/runner:latest,172.20.0.161:30500/claude-agent-runner/runner:main-${CI_COMMIT_SHA:0:7}",push=true,registry.insecure=true
