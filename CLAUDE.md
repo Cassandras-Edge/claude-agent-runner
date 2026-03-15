@@ -70,7 +70,7 @@ The runner patches Claude Code's CLI/SDK at build time. **This is the most fragi
 
 ### Pinned Version
 
-Currently pinned to `@anthropic-ai/claude-code@2.1.72` (set in `packages/runner/Dockerfile` lines 5 and 42).
+Currently pinned to `@anthropic-ai/claude-code@2.1.74` (set in `packages/runner/Dockerfile` lines 5 and 42).
 
 ### Active Patches (in `packages/runner/patches/patches/`)
 

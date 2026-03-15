@@ -8,7 +8,7 @@ Deploys on **Docker** (single host) or **Kubernetes** (k3s/k8s) with multi-tenan
 
 Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a patched CLI for background MCP tools, live IPC, session commands, and custom compaction prompts.
 
-**Tested against Claude Code v2.1.63.**
+**Tested against Claude Code v2.1.74.**
 
 ## What This Adds Beyond Stock Claude
 
@@ -370,11 +370,11 @@ docker build -f packages/runner/Dockerfile -t claude-runner .
 
 ## CI/CD
 
-GitHub Actions workflow (`.github/workflows/docker.yml`):
+Woodpecker CI (`.woodpecker/ci.yaml`):
 - **Test:** typecheck + vitest on every push/PR
-- **Validate manifests:** `kubectl kustomize` dry-run on k8s/ and k8s/monitoring/
-- **Build:** Docker images pushed to GHCR on main/tags (orchestrator + runner)
-- **Image tags:** `:latest`, `main-<sha>`, semver on tags
+- **Build:** Docker images built via BuildKit, pushed to local registry (`172.20.0.161:30500`) on main
+- **Image tags:** `:latest` and `main-<sha>`
+- **CLI version check:** Daily cron (`cli-version-check.yaml`) tests patches against new Claude Code releases
 
 ## License
 
