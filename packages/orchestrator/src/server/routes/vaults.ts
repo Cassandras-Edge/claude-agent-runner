@@ -27,20 +27,21 @@ export function registerVaultRoutes(app: Hono, ctx: AppContext): void {
    * api.obsidian.md/vault/list to get available remote vaults.
    */
   app.get("/vaults", async (c) => {
+    // Try per-tenant credentials from ACL first, fall back to global env var
     const tenant = getTenant(ctx, c);
-    if (!tenant?.email) {
-      return c.json({ error: "Tenant email not configured — set it in the portal" }, 400);
+    let authToken: string | undefined;
+
+    if (tenant?.email && ctx.aclClient) {
+      const creds = await ctx.aclClient.fetchCredentials(tenant.email, "runner");
+      authToken = creds?.OBSIDIAN_AUTH_TOKEN;
     }
 
-    if (!ctx.aclClient) {
-      return c.json({ error: "ACL service not configured" }, 503);
-    }
-
-    // Fetch the tenant's Obsidian auth token from ACL
-    const creds = await ctx.aclClient.fetchCredentials(tenant.email, "runner");
-    const authToken = creds?.OBSIDIAN_AUTH_TOKEN;
     if (!authToken) {
-      return c.json({ error: "Obsidian auth token not configured — set it in the portal" }, 400);
+      authToken = process.env.OBSIDIAN_AUTH_TOKEN;
+    }
+
+    if (!authToken) {
+      return c.json({ error: "Obsidian auth token not configured" }, 400);
     }
 
     try {
