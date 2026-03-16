@@ -66,7 +66,7 @@ export function registerVaultRoutes(app: Hono, ctx: AppContext): void {
         name: v.name,
       }));
 
-      logger.info("orchestrator.api", "vaults_listed", { tenant: tenant.id, count: vaults.length });
+      logger.info("orchestrator.api", "vaults_listed", { tenant: tenant?.id, count: vaults.length });
       return c.json({ vaults });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
