@@ -14,7 +14,7 @@ import { AutoCompactor } from "./auto-compact.js";
 import { WarmPool } from "./warm-pool.js";
 import type { WarmPoolProfile } from "./warm-pool.js";
 import { TenantManager } from "./tenants.js";
-import { AclClient } from "./acl-client.js";
+import { AuthClient } from "./auth-client.js";
 import { logger } from "./logger.js";
 
 // --- Config ---
@@ -80,15 +80,15 @@ if (process.env.GIT_TOKEN) runnerEnv.GIT_TOKEN = process.env.GIT_TOKEN;
 if (process.env.GITHUB_TOKEN) runnerEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
 // ACL client for fetching per-tenant credentials (Obsidian auth tokens, etc.)
-const ACL_URL = process.env.ACL_URL;
-const ACL_SECRET = process.env.ACL_SECRET;
-const aclClient = ACL_URL && ACL_SECRET
-  ? new AclClient({ aclUrl: ACL_URL, aclSecret: ACL_SECRET })
+const AUTH_URL = process.env.AUTH_URL;
+const AUTH_SECRET = process.env.AUTH_SECRET;
+const authClient = AUTH_URL && AUTH_SECRET
+  ? new AuthClient({ authUrl: AUTH_URL, authSecret: AUTH_SECRET })
   : undefined;
-if (aclClient) {
-  logger.info("orchestrator.config", "acl_client_initialized", { acl_url: ACL_URL });
+if (authClient) {
+  logger.info("orchestrator.config", "auth_client_initialized", { auth_url: AUTH_URL });
 } else {
-  logger.info("orchestrator.config", "acl_client_disabled", { reason: "ACL_URL or ACL_SECRET not set" });
+  logger.info("orchestrator.config", "auth_client_disabled", { reason: "AUTH_URL or AUTH_SECRET not set" });
 }
 
 // --- Database ---
@@ -205,7 +205,7 @@ const app = createServer({
   warmPool,
   tenants,
   adminApiKey: ADMIN_API_KEY,
-  aclClient,
+  authClient,
 });
 
 // Fill warm pool after network is ready

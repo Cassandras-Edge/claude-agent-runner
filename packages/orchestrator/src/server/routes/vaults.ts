@@ -31,8 +31,8 @@ export function registerVaultRoutes(app: Hono, ctx: AppContext): void {
     const tenant = getTenant(ctx, c);
     let authToken: string | undefined;
 
-    if (tenant?.email && ctx.aclClient) {
-      const creds = await ctx.aclClient.fetchCredentials(tenant.email, "runner");
+    if (tenant?.email && ctx.authClient) {
+      const creds = await ctx.authClient.fetchCredentials(tenant.email, "runner");
       authToken = creds?.OBSIDIAN_AUTH_TOKEN;
     }
 
