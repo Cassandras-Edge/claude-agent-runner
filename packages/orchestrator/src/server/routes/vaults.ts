@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { logger } from "../../logger.js";
 import type { AppContext } from "../app-context.js";
+import { getTenant } from "../app-context.js";
 
 const OBSIDIAN_API = "https://api.obsidian.md";
 const SUPPORTED_ENCRYPTION_VERSION = 3;
@@ -26,8 +27,7 @@ export function registerVaultRoutes(app: Hono, ctx: AppContext): void {
    * api.obsidian.md/vault/list to get available remote vaults.
    */
   app.get("/vaults", async (c) => {
-    // Auth middleware sets tenant on the context via c.set("tenant", ...)
-    const tenant = c.get("tenant" as any) as any;
+    const tenant = getTenant(ctx, c);
     if (!tenant?.email) {
       return c.json({ error: "Tenant email not configured — set it in the portal" }, 400);
     }
