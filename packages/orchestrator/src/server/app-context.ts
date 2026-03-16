@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import type { Context } from "hono";
+import type { AclClient } from "../acl-client.js";
 import type { ContainerManager } from "../docker.js";
 import type { SessionManager } from "../sessions.js";
 import type { TokenPool } from "../token-pool.js";
@@ -25,6 +26,7 @@ export interface AppContext {
   warmPool?: import("../warm-pool.js").WarmPool;
   tenants?: TenantManager;
   adminApiKey?: string;
+  aclClient?: AclClient;
 }
 
 export function getTenant(ctx: AppContext, c: Context): Tenant | undefined {

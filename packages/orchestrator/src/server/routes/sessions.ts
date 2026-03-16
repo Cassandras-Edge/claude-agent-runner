@@ -11,6 +11,7 @@ import {
   getSessionSource,
   getTranscriptResponse,
   parseSessionRequest,
+  resolveSessionEnv,
   rollbackSession,
   sendAndCollect,
   spawnSession,
@@ -195,7 +196,8 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
     await ctx.docker.kill(session.id).catch(() => undefined);
 
     const { token, tokenIndex } = ctx.tokenPool.assign(session.id);
-    const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
+    const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, session.tenantId);
+    const sessionEnv = { ...resolvedEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
 
     try {
       const containerId = await ctx.docker.spawn({

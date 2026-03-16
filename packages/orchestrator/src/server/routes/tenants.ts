@@ -49,8 +49,8 @@ export function registerTenantRoutes(app: Hono, ctx: AppContext): void {
       name: found.name,
       namespace: found.namespace,
       max_sessions: found.maxSessions,
+      email: found.email,
       vault: found.vault,
-      has_obsidian_auth: !!found.obsidianAuthToken,
       has_git_token: !!found.gitToken,
       created_at: found.createdAt.toISOString(),
       updated_at: found.updatedAt.toISOString(),
@@ -80,9 +80,8 @@ export function registerTenantRoutes(app: Hono, ctx: AppContext): void {
         name: body.name,
         namespace: body.namespace,
         maxSessions: body.max_sessions,
+        email: body.email,
         vault: body.vault,
-        obsidianAuthToken: body.obsidian_auth_token,
-        obsidianE2eePassword: body.obsidian_e2ee_password,
         gitToken: body.git_token,
       });
 
@@ -120,9 +119,8 @@ export function registerTenantRoutes(app: Hono, ctx: AppContext): void {
     const updated = tenantMgr.update(c.req.param("id"), {
       name: body.name,
       maxSessions: body.max_sessions,
+      email: body.email,
       vault: body.vault,
-      obsidianAuthToken: body.obsidian_auth_token,
-      obsidianE2eePassword: body.obsidian_e2ee_password,
       gitToken: body.git_token,
     });
 

@@ -6,6 +6,7 @@ import { registerHealthRoutes } from "./server/routes/health.js";
 import { registerSessionRoutes } from "./server/routes/sessions.js";
 import { registerTenantRoutes } from "./server/routes/tenants.js";
 import { registerUtilityRoutes } from "./server/routes/utility.js";
+import { registerVaultRoutes } from "./server/routes/vaults.js";
 
 export { type AppContext } from "./server/app-context.js";
 
@@ -18,6 +19,7 @@ export function createServer(ctx: AppContext): Hono {
   registerUtilityRoutes(app, ctx);
   registerSessionRoutes(app, ctx);
   registerTenantRoutes(app, ctx);
+  registerVaultRoutes(app, ctx);
 
   return app;
 }

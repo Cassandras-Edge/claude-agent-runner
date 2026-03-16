@@ -8,9 +8,8 @@ export interface Tenant {
   name: string;
   namespace: string;
   maxSessions: number;
+  email?: string;
   vault?: string;
-  obsidianAuthToken?: string;
-  obsidianE2eePassword?: string;
   gitToken?: string;
   createdAt: Date;
   updatedAt: Date;
@@ -21,18 +20,16 @@ export interface CreateTenantConfig {
   name: string;
   namespace?: string; // defaults to "claude-t-{id}"
   maxSessions?: number;
+  email?: string;
   vault?: string;
-  obsidianAuthToken?: string;
-  obsidianE2eePassword?: string;
   gitToken?: string;
 }
 
 export interface UpdateTenantConfig {
   name?: string;
   maxSessions?: number;
+  email?: string | null;
   vault?: string | null;
-  obsidianAuthToken?: string | null;
-  obsidianE2eePassword?: string | null;
   gitToken?: string | null;
 }
 
@@ -46,9 +43,8 @@ function rowToTenant(row: TenantRow): Tenant {
     name: row.name,
     namespace: row.namespace,
     maxSessions: row.max_sessions,
+    email: row.email ?? undefined,
     vault: row.vault ?? undefined,
-    obsidianAuthToken: row.obsidian_auth_token ?? undefined,
-    obsidianE2eePassword: row.obsidian_e2ee_password ?? undefined,
     gitToken: row.git_token ?? undefined,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -81,17 +77,16 @@ export class TenantManager {
     const now = new Date().toISOString();
 
     this.db.prepare(`
-      INSERT INTO tenants (id, name, api_key_hash, namespace, max_sessions, vault, obsidian_auth_token, obsidian_e2ee_password, git_token, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO tenants (id, name, api_key_hash, namespace, max_sessions, email, vault, git_token, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       config.id,
       config.name,
       apiKeyHash,
       namespace,
       config.maxSessions ?? 10,
+      config.email ?? null,
       config.vault ?? null,
-      config.obsidianAuthToken ?? null,
-      config.obsidianE2eePassword ?? null,
       config.gitToken ?? null,
       now,
       now,
@@ -142,9 +137,8 @@ export class TenantManager {
 
     if (config.name !== undefined) { sets.push("name = ?"); params.push(config.name); }
     if (config.maxSessions !== undefined) { sets.push("max_sessions = ?"); params.push(config.maxSessions); }
+    if (config.email !== undefined) { sets.push("email = ?"); params.push(config.email); }
     if (config.vault !== undefined) { sets.push("vault = ?"); params.push(config.vault); }
-    if (config.obsidianAuthToken !== undefined) { sets.push("obsidian_auth_token = ?"); params.push(config.obsidianAuthToken); }
-    if (config.obsidianE2eePassword !== undefined) { sets.push("obsidian_e2ee_password = ?"); params.push(config.obsidianE2eePassword); }
     if (config.gitToken !== undefined) { sets.push("git_token = ?"); params.push(config.gitToken); }
 
     if (sets.length === 0) return existing;

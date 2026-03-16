@@ -47,10 +47,9 @@ export class K8sProvisioner {
       },
     });
 
-    // 3. Create tenant-config secret with Obsidian/git tokens
+    // 3. Create tenant-config secret with git tokens
+    // Note: Obsidian tokens are now fetched per-session from the ACL credential store
     const secretData: Record<string, string> = {};
-    if (tenant.obsidianAuthToken) secretData.OBSIDIAN_AUTH_TOKEN = tenant.obsidianAuthToken;
-    if (tenant.obsidianE2eePassword) secretData.OBSIDIAN_E2EE_PASSWORD = tenant.obsidianE2eePassword;
     if (tenant.gitToken) {
       secretData.GIT_TOKEN = tenant.gitToken;
       secretData.GITHUB_TOKEN = tenant.gitToken;
@@ -92,11 +91,9 @@ export class K8sProvisioner {
     }
   }
 
-  /** Update tenant-config secret (e.g. after Obsidian token change). */
+  /** Update tenant-config secret (e.g. after git token change). */
   async updateSecret(namespace: string, tenant: Tenant): Promise<void> {
     const secretData: Record<string, string> = {};
-    if (tenant.obsidianAuthToken) secretData.OBSIDIAN_AUTH_TOKEN = tenant.obsidianAuthToken;
-    if (tenant.obsidianE2eePassword) secretData.OBSIDIAN_E2EE_PASSWORD = tenant.obsidianE2eePassword;
     if (tenant.gitToken) {
       secretData.GIT_TOKEN = tenant.gitToken;
       secretData.GITHUB_TOKEN = tenant.gitToken;

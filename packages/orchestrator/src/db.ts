@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS tenants (
   api_key_hash TEXT NOT NULL UNIQUE,
   namespace TEXT NOT NULL UNIQUE,
   max_sessions INTEGER NOT NULL DEFAULT 10,
+  email TEXT,
   vault TEXT,
   obsidian_auth_token TEXT,
   obsidian_e2ee_password TEXT,
@@ -87,6 +88,7 @@ export interface TenantRow {
   api_key_hash: string;
   namespace: string;
   max_sessions: number;
+  email: string | null;
   vault: string | null;
   obsidian_auth_token: string | null;
   obsidian_e2ee_password: string | null;
@@ -148,6 +150,7 @@ const MIGRATIONS = [
   "ALTER TABLE sessions ADD COLUMN mcp_servers TEXT",
   "ALTER TABLE sessions ADD COLUMN allowed_paths TEXT",
   "CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions(tenant_id)",
+  "ALTER TABLE tenants ADD COLUMN email TEXT",
 ];
 
 function runMigrations(db: Database.Database): void {

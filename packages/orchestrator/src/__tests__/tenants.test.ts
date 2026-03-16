@@ -38,17 +38,15 @@ describe("TenantManager", () => {
       expect(() => tenants.create({ id: "dup", name: "Second" })).toThrow();
     });
 
-    it("stores vault and obsidian config", () => {
+    it("stores email and vault config", () => {
       const { tenant } = tenants.create({
         id: "vault-test",
         name: "Vault Test",
+        email: "user@example.com",
         vault: "my-vault",
-        obsidianAuthToken: "token123",
-        obsidianE2eePassword: "pass456",
       });
+      expect(tenant.email).toBe("user@example.com");
       expect(tenant.vault).toBe("my-vault");
-      expect(tenant.obsidianAuthToken).toBe("token123");
-      expect(tenant.obsidianE2eePassword).toBe("pass456");
     });
   });
 
