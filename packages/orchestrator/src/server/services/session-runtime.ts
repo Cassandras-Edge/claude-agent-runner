@@ -52,23 +52,37 @@ export async function parseSessionRequest(
 
 /**
  * Fetch per-tenant credentials from the ACL service and merge into the session env.
+ *
+ * ACL store layout:
+ *   cred:{email}:runner          → { OBSIDIAN_AUTH_TOKEN }  (account-level)
+ *   cred:{email}:runner:{vault}  → { OBSIDIAN_E2EE_PASSWORD }  (per-vault)
+ *
  * Falls back gracefully: if no ACL client, no tenant, or no email, returns the env unchanged.
  */
 export async function resolveSessionEnv(
   ctx: AppContext,
   baseEnv: Record<string, string>,
   tenantId?: string,
+  vaultName?: string,
 ): Promise<Record<string, string>> {
   if (!ctx.aclClient || !tenantId || !ctx.tenants) return baseEnv;
 
   const tenant = ctx.tenants.get(tenantId);
   if (!tenant?.email) return baseEnv;
 
-  const creds = await ctx.aclClient.fetchCredentials(tenant.email, "runner");
-  if (!creds) return baseEnv;
+  // Fetch account-level credentials (auth token) and vault-specific (E2EE password) in parallel
+  const fetches: Promise<Record<string, string> | null>[] = [
+    ctx.aclClient.fetchCredentials(tenant.email, "runner"),
+  ];
+  if (vaultName) {
+    fetches.push(ctx.aclClient.fetchCredentials(tenant.email, `runner:${vaultName}`));
+  }
 
-  // ACL credentials override global env (e.g. per-tenant OBSIDIAN_AUTH_TOKEN)
-  return { ...baseEnv, ...creds };
+  const [accountCreds, vaultCreds] = await Promise.all(fetches);
+
+  if (!accountCreds && !vaultCreds) return baseEnv;
+
+  return { ...baseEnv, ...accountCreds, ...vaultCreds };
 }
 
 export async function spawnSession(
@@ -153,7 +167,7 @@ export async function spawnSession(
   }
 
   const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
-  const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, tenantId);
+  const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, tenantId, body.vault);
   const sessionEnv = { ...resolvedEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
   let containerId: string | undefined;
 

@@ -196,7 +196,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
     await ctx.docker.kill(session.id).catch(() => undefined);
 
     const { token, tokenIndex } = ctx.tokenPool.assign(session.id);
-    const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, session.tenantId);
+    const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, session.tenantId, session.vaultName);
     const sessionEnv = { ...resolvedEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
 
     try {
