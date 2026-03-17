@@ -37,7 +37,7 @@ export function cloneRepo(): void {
   }
 }
 
-export function syncVault(): void {
+export async function syncVault(sendStatus?: (status: string) => void): Promise<void> {
   if (!state.VAULT) return;
 
   const obsidianAuthToken = process.env.OBSIDIAN_AUTH_TOKEN;
@@ -71,11 +71,46 @@ export function syncVault(): void {
       { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
     );
 
-    // Do a blocking sync to ensure all files are pulled before proceeding
-    execSync(
-      `ob sync --path ${JSON.stringify(state.WORKSPACE)}`,
-      { stdio: "pipe", timeout: 120_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
-    );
+    // Blocking sync with progress reporting
+    sendStatus?.("syncing vault");
+    await new Promise<void>((resolve, reject) => {
+      const syncProc = spawnChild("ob", ["sync", "--path", state.WORKSPACE], {
+        stdio: "pipe",
+        env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken },
+      });
+
+      const timeout = setTimeout(() => {
+        syncProc.kill();
+        reject(new Error("ob sync timed out after 120s"));
+      }, 120_000);
+
+      let lastFileCount = 0;
+      const progressInterval = setInterval(() => {
+        try {
+          const count = execSync(
+            `find ${JSON.stringify(state.WORKSPACE)} -not -path '*/.obsidian/*' -type f | wc -l`,
+            { encoding: "utf-8", timeout: 5000 },
+          ).trim();
+          const n = parseInt(count, 10);
+          if (n !== lastFileCount) {
+            lastFileCount = n;
+            sendStatus?.(`syncing vault (${n} files)`);
+          }
+        } catch {}
+      }, 2000);
+
+      syncProc.on("exit", (code) => {
+        clearTimeout(timeout);
+        clearInterval(progressInterval);
+        if (code === 0) resolve();
+        else reject(new Error(`ob sync exited with code ${code}`));
+      });
+      syncProc.on("error", (err) => {
+        clearTimeout(timeout);
+        clearInterval(progressInterval);
+        reject(err);
+      });
+    });
 
     logger.info("runner.vault", "vault_sync_setup_complete", { vault: state.VAULT, workspace: state.WORKSPACE });
   } catch (err: any) {

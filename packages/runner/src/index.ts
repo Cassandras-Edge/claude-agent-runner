@@ -23,7 +23,9 @@ function connect(): void {
           cloneRepo();
         } else if (state.VAULT) {
           ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "syncing" }));
-          syncVault();
+          await syncVault((status) => {
+            ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status }));
+          });
         }
 
         if (!existsSync(state.WORKSPACE)) {
