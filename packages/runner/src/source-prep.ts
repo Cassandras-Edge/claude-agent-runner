@@ -56,6 +56,20 @@ export async function syncVault(sendStatus?: (status: string) => void): Promise<
     device: deviceName,
   });
 
+  // Remove stale sync lock before setup (left by previous sessions on shared PVC)
+  const lockPath = `${state.WORKSPACE}/.obsidian/.sync.lock`;
+  try {
+    if (existsSync(lockPath)) {
+      rmSync(lockPath, { recursive: true, force: true });
+      logger.info("runner.vault", "stale_sync_lock_removed", { path: lockPath });
+    }
+  } catch (err) {
+    logger.warn("runner.vault", "failed_to_remove_sync_lock", {
+      path: lockPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   try {
     try {
       execSync(
@@ -138,19 +152,6 @@ export async function syncVault(sendStatus?: (status: string) => void): Promise<
       const message = err instanceof Error ? err.message : String(err);
       logger.warn("runner.vault", "claude_dir_symlink_failed", { error: message });
     }
-  }
-
-  const lockPath = `${state.WORKSPACE}/.obsidian/.sync.lock`;
-  try {
-    if (existsSync(lockPath)) {
-      rmSync(lockPath, { recursive: true, force: true });
-      logger.info("runner.vault", "stale_sync_lock_removed", { path: lockPath });
-    }
-  } catch (err) {
-    logger.warn("runner.vault", "failed_to_remove_sync_lock", {
-      path: lockPath,
-      error: err instanceof Error ? err.message : String(err),
-    });
   }
 
   try {
