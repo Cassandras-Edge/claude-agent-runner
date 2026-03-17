@@ -58,9 +58,11 @@ COPY packages/runner/package.json packages/runner/
 
 RUN npm ci --workspace=packages/shared --workspace=packages/runner --omit=dev && npm cache clean --force
 
-# Patch SDK: V2's SQ constructor hard-codes includePartialMessages:false,
-# ignoring the option from SDKSessionOptions. This enables token-level streaming.
+# Patch SDK: V2's SQ constructor hard-codes several options, ignoring values
+# from SDKSessionOptions. Fix includePartialMessages and settingSources.
 RUN sed -i 's/includePartialMessages:!1,forkSession/includePartialMessages:Q.includePartialMessages??!1,forkSession/' \
+    node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs && \
+    sed -i 's/settingSources:\[\],allowedTools/settingSources:Q.settingSources??[],allowedTools/' \
     node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
