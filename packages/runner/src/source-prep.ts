@@ -71,6 +71,12 @@ export function syncVault(): void {
       { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
     );
 
+    // Do a blocking sync to ensure all files are pulled before proceeding
+    execSync(
+      `ob sync --path ${JSON.stringify(state.WORKSPACE)}`,
+      { stdio: "pipe", timeout: 120_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+    );
+
     logger.info("runner.vault", "vault_sync_setup_complete", { vault: state.VAULT, workspace: state.WORKSPACE });
   } catch (err: any) {
     const stderr = err?.stderr?.toString?.()?.trim() || "";
