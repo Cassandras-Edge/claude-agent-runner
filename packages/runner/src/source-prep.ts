@@ -85,22 +85,17 @@ export function syncVault(): void {
     throw new Error(`Vault sync failed: ${message}`);
   }
 
-  // Clone config repo to overlay .claude/ (rules, settings) that Obsidian doesn't sync.
-  // Kept as a live clone so the agent can commit and push self-configuration changes.
-  const configRepo = process.env.RUNNER_CONFIG_REPO;
-  if (configRepo) {
+  // Obsidian doesn't sync dotfiles. Vault convention: put Claude config in `claude/`
+  // (visible folder that syncs) and symlink `.claude` to it so the CLI discovers rules/skills.
+  const claudeDir = `${state.WORKSPACE}/claude`;
+  const dotClaudeDir = `${state.WORKSPACE}/.claude`;
+  if (existsSync(claudeDir) && !existsSync(dotClaudeDir)) {
     try {
-      let configUrl = configRepo;
-      if (state.GIT_TOKEN && configUrl.startsWith("https://")) {
-        configUrl = configUrl.replace("https://", `https://x-access-token:${state.GIT_TOKEN}@`);
-      }
-      const configDir = `${state.WORKSPACE}/.claude-config`;
-      execSync(`git clone --depth 1 ${configUrl} ${configDir}`, { stdio: "pipe", timeout: 30_000 });
-      execSync(`ln -sfn ${configDir}/.claude ${state.WORKSPACE}/.claude`, { stdio: "pipe" });
-      logger.info("runner.vault", "config_repo_overlaid", { repo: configRepo, config_dir: configDir });
+      execSync(`ln -sfn ${claudeDir} ${dotClaudeDir}`, { stdio: "pipe" });
+      logger.info("runner.vault", "claude_dir_symlinked", { source: claudeDir, target: dotClaudeDir });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      logger.warn("runner.vault", "config_repo_clone_failed", { repo: configRepo, error: message });
+      logger.warn("runner.vault", "claude_dir_symlink_failed", { error: message });
     }
   }
 
