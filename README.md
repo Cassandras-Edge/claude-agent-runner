@@ -272,8 +272,8 @@ All configuration via environment variables. See [`.env.example`](.env.example).
 | `RUNNER_CPU_LIMIT` | No | CPU limit per runner pod (k8s only, e.g. `2`) |
 | `RUNNER_MEMORY_REQUEST` | No | Memory request per runner pod (k8s only, e.g. `512Mi`) |
 | `RUNNER_MEMORY_LIMIT` | No | Memory limit per runner pod (k8s only, e.g. `2Gi`) |
-| `OBSIDIAN_AUTH_TOKEN` | No | Obsidian sync token (required for vault sessions) |
-| `OBSIDIAN_E2EE_PASSWORD` | No | Obsidian E2E encryption password |
+| `AUTH_URL` | No | Auth store URL (for per-tenant Obsidian credentials) |
+| `AUTH_SECRET` | No | Auth store shared secret |
 
 ## Cloudflare Tunnel
 

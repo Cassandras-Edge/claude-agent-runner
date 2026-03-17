@@ -70,18 +70,6 @@ spec:
                   name: git-tokens
                   key: GITHUB_TOKEN
                   optional: true
-            - name: OBSIDIAN_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: obsidian-auth
-                  key: OBSIDIAN_AUTH_TOKEN
-                  optional: true
-            - name: OBSIDIAN_E2EE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: obsidian-auth
-                  key: OBSIDIAN_E2EE_PASSWORD
-                  optional: true
           volumeMounts:
             - name: orchestrator-data
               mountPath: /data

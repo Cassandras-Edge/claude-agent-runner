@@ -735,6 +735,13 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
     if (cfg.mcpServers !== undefined) state.MCP_SERVERS = cfg.mcpServers || {};
     if (cfg.allowedPaths !== undefined) state.ALLOWED_PATHS = cfg.allowedPaths || [];
 
+    // Apply per-tenant credentials from the auth store
+    if (cfg.credentials) {
+      for (const [key, value] of Object.entries(cfg.credentials)) {
+        if (value) process.env[key] = value as string;
+      }
+    }
+
     try {
       if (cfg.vault !== undefined) state.VAULT = cfg.vault;
 

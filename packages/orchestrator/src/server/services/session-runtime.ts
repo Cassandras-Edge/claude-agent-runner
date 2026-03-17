@@ -59,18 +59,26 @@ export async function parseSessionRequest(
  *
  * Falls back gracefully: if no Auth client, no tenant, or no email, returns the env unchanged.
  */
-export async function resolveSessionEnv(
+/**
+ * Fetch per-tenant credentials from the auth store.
+ *
+ * Auth store layout:
+ *   cred:{email}:runner          → { OBSIDIAN_AUTH_TOKEN }  (account-level)
+ *   cred:{email}:runner:{vault}  → { OBSIDIAN_E2EE_PASSWORD }  (per-vault)
+ *
+ * Returns credentials as a separate map (not merged into process.env)
+ * so they bypass the FORWARDED_RUNNER_ENV_KEYS allowlist.
+ */
+export async function resolveCredentials(
   ctx: AppContext,
-  baseEnv: Record<string, string>,
   tenantId?: string,
   vaultName?: string,
 ): Promise<Record<string, string>> {
-  if (!ctx.authClient || !tenantId || !ctx.tenants) return baseEnv;
+  if (!ctx.authClient || !tenantId || !ctx.tenants) return {};
 
   const tenant = ctx.tenants.get(tenantId);
-  if (!tenant?.email) return baseEnv;
+  if (!tenant?.email) return {};
 
-  // Fetch account-level credentials (auth token) and vault-specific (E2EE password) in parallel
   const fetches: Promise<Record<string, string> | null>[] = [
     ctx.authClient.fetchCredentials(tenant.email, "runner"),
   ];
@@ -80,9 +88,7 @@ export async function resolveSessionEnv(
 
   const [accountCreds, vaultCreds] = await Promise.all(fetches);
 
-  if (!accountCreds && !vaultCreds) return baseEnv;
-
-  return { ...baseEnv, ...accountCreds, ...vaultCreds };
+  return { ...accountCreds, ...vaultCreds };
 }
 
 export async function spawnSession(
@@ -110,6 +116,7 @@ export async function spawnSession(
     if (warmEntry) {
       ctx.tokenPool.release(warmEntry.warmId);
       const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
+      const warmCredentials = await resolveCredentials(ctx, tenantId, body.vault);
 
       const adoptConfig = {
         repo: body.repo,
@@ -127,6 +134,7 @@ export async function spawnSession(
         permissionMode: body.permissionMode,
         mcpServers: body.mcpServers,
         allowedPaths: body.allowedPaths,
+        credentials: warmCredentials,
       };
 
       ctx.bridge.sendAdopt(warmEntry.warmId, sessionId, token, adoptConfig);
@@ -167,8 +175,8 @@ export async function spawnSession(
   }
 
   const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
-  const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, tenantId, body.vault);
-  const sessionEnv = { ...resolvedEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
+  const credentialsEnv = await resolveCredentials(ctx, tenantId, body.vault);
+  const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
   let containerId: string | undefined;
 
   try {
@@ -177,6 +185,7 @@ export async function spawnSession(
       image: ctx.runnerImage,
       orchestratorUrl: ctx.orchestratorWsUrl,
       env: sessionEnv,
+      credentialsEnv,
       network: ctx.network,
       sessionsVolume: ctx.sessionsVolume,
       vault: body.vault,

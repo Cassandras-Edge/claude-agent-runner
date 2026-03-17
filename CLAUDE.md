@@ -192,7 +192,7 @@ These features activate only when `vault` is passed in the session request:
 - **Suggest folder**: `POST /sessions/:id/suggest-folder` — Haiku utility query to suggest vault folder for a note
 - **Generate title**: `POST /sessions/:id/generate-title` — Haiku utility query for session titles
 - **Warm pool keying**: vault sessions get vault-specific warm containers
-- **Env vars**: `OBSIDIAN_AUTH_TOKEN`, `OBSIDIAN_E2EE_PASSWORD` (forwarded from orchestrator to runners)
+- **Credentials**: `OBSIDIAN_AUTH_TOKEN` and `OBSIDIAN_E2EE_PASSWORD` fetched per-tenant from the auth store (set via portal UI)
 
 Without vault config, the runner works as a plain git-clone-and-code agent.
 
@@ -217,8 +217,8 @@ Without vault config, the runner works as a plain git-clone-and-code agent.
 | `WARM_POOL_SIZE` | Orchestrator | `0` | Pre-spawned warm containers |
 | `ENABLE_TENANTS` | Orchestrator | `false` | Multi-tenancy mode |
 | `ADMIN_API_KEY` | Orchestrator | — | Admin key for `/tenants` routes |
-| `OBSIDIAN_AUTH_TOKEN` | Orchestrator | — | For vault sync sessions |
-| `OBSIDIAN_E2EE_PASSWORD` | Orchestrator | — | Obsidian E2E encryption |
+| `AUTH_URL` | Orchestrator | — | Auth store URL (for per-tenant credentials) |
+| `AUTH_SECRET` | Orchestrator | — | Auth store shared secret |
 
 See `.env.example` for the full list.
 

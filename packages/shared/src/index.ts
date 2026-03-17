@@ -554,6 +554,8 @@ export interface OrchestratorAdoptCommand {
     permissionMode?: string;
     mcpServers?: Record<string, McpServerConfig>;
     allowedPaths?: string[];
+    /** Per-tenant credentials from the auth store (e.g. OBSIDIAN_AUTH_TOKEN, OBSIDIAN_E2EE_PASSWORD). */
+    credentials?: Record<string, string>;
   };
 }
 

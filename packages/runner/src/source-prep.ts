@@ -72,11 +72,14 @@ export function syncVault(): void {
     );
 
     logger.info("runner.vault", "vault_sync_setup_complete", { vault: state.VAULT, workspace: state.WORKSPACE });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+  } catch (err: any) {
+    const stderr = err?.stderr?.toString?.()?.trim() || "";
+    const message = stderr || (err instanceof Error ? err.message : String(err));
+    const hasPassword = passwordArgs.length > 0;
     logger.error("runner.vault", "vault_sync_failed", {
       session_id: state.SESSION_ID,
       vault: state.VAULT,
+      has_e2ee_password: hasPassword,
       error: message,
     });
     throw new Error(`Vault sync failed: ${message}`);

@@ -34,10 +34,7 @@ kubectl create secret generic claude-tokens \
   -n claude-runner \
   --from-literal=CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
 
-# Placeholder secrets (optional — fill in if using vaults/git)
-kubectl create secret generic obsidian-auth -n claude-runner \
-  --from-literal=OBSIDIAN_AUTH_TOKEN="" \
-  --from-literal=OBSIDIAN_E2EE_PASSWORD=""
+# Obsidian vault credentials are managed via the auth store (portal UI), not k8s secrets.
 
 kubectl create secret generic git-tokens -n claude-runner \
   --from-literal=GIT_TOKEN="" \

@@ -11,7 +11,7 @@ import {
   getSessionSource,
   getTranscriptResponse,
   parseSessionRequest,
-  resolveSessionEnv,
+  resolveCredentials,
   rollbackSession,
   sendAndCollect,
   spawnSession,
@@ -196,8 +196,8 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
     await ctx.docker.kill(session.id).catch(() => undefined);
 
     const { token, tokenIndex } = ctx.tokenPool.assign(session.id);
-    const resolvedEnv = await resolveSessionEnv(ctx, ctx.env, session.tenantId, session.vaultName);
-    const sessionEnv = { ...resolvedEnv, CLAUDE_CODE_OAUTH_TOKEN: token };
+    const credentialsEnv = await resolveCredentials(ctx, session.tenantId, session.vaultName);
+    const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
 
     try {
       const containerId = await ctx.docker.spawn({
@@ -205,6 +205,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
         image: ctx.runnerImage,
         orchestratorUrl: ctx.orchestratorWsUrl,
         env: sessionEnv,
+        credentialsEnv,
         network: ctx.network,
         sessionsVolume: ctx.sessionsVolume,
         repo: session.repo,
@@ -279,6 +280,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       await ensureCapacity(ctx);
 
       const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
+      const credentialsEnv = await resolveCredentials(ctx, parent.tenantId, parent.vaultName);
       const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
 
       const containerId = await ctx.docker.spawn({
@@ -286,6 +288,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
         image: ctx.runnerImage,
         orchestratorUrl: ctx.orchestratorWsUrl,
         env: sessionEnv,
+        credentialsEnv,
         network: ctx.network,
         sessionsVolume: ctx.sessionsVolume,
         vault: parent.vaultName,

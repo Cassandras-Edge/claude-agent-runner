@@ -6,8 +6,6 @@ export const FORWARDED_RUNNER_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
   "GIT_TOKEN",
   "GITHUB_TOKEN",
-  "OBSIDIAN_AUTH_TOKEN",
-  "OBSIDIAN_E2EE_PASSWORD",
 ]);
 
 export interface SpawnConfig {
@@ -38,6 +36,8 @@ export interface SpawnConfig {
   forkFrom?: string;
   forkAt?: string;
   forkSession?: boolean;
+  /** Per-tenant credentials from the auth store (bypass FORWARDED_RUNNER_ENV_KEYS filter). */
+  credentialsEnv?: Record<string, string>;
   /** k8s namespace for the pod (used by K8sManager, ignored by DockerManager). */
   namespace?: string;
 }
@@ -95,10 +95,15 @@ export class DockerManager implements ContainerManager {
       has_fork_from: !!config.forkFrom,
     });
 
+    const credEntries = Object.entries(config.credentialsEnv || {}).filter(
+      ([, v]) => v !== undefined && v !== "",
+    );
+
     const envVars = [
       `RUNNER_SESSION_ID=${config.sessionId}`,
       `RUNNER_ORCHESTRATOR_URL=${config.orchestratorUrl}`,
       ...forwardedEnvEntries.map(([k, v]) => `${k}=${v}`),
+      ...credEntries.map(([k, v]) => `${k}=${v}`),
     ];
 
     if (config.repo) envVars.push(`RUNNER_REPO=${config.repo}`);

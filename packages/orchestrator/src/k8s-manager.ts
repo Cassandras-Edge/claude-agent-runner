@@ -77,10 +77,15 @@ export class K8sManager implements ContainerManager {
       has_fork_from: !!config.forkFrom,
     });
 
+    const credEntries = Object.entries(config.credentialsEnv || {}).filter(
+      ([, v]) => v !== undefined && v !== "",
+    );
+
     const envVars: k8s.V1EnvVar[] = [
       { name: "RUNNER_SESSION_ID", value: config.sessionId },
       { name: "RUNNER_ORCHESTRATOR_URL", value: config.orchestratorUrl },
       ...forwardedEnvEntries.map(([k, v]) => ({ name: k, value: v })),
+      ...credEntries.map(([k, v]) => ({ name: k, value: v })),
     ];
 
     if (config.repo) envVars.push({ name: "RUNNER_REPO", value: config.repo });

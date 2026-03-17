@@ -23,25 +23,21 @@ interface ObsidianVaultListResponse {
 export function registerVaultRoutes(app: Hono, ctx: AppContext): void {
   /**
    * GET /vaults — list available Obsidian Sync vaults for the authenticated tenant.
-   * Fetches the tenant's OBSIDIAN_AUTH_TOKEN from ACL, then queries
+   * Fetches the tenant's OBSIDIAN_AUTH_TOKEN from the auth store, then queries
    * api.obsidian.md/vault/list to get available remote vaults.
    */
   app.get("/vaults", async (c) => {
-    // Try per-tenant credentials from ACL first, fall back to global env var
     const tenant = getTenant(ctx, c);
-    let authToken: string | undefined;
 
-    if (tenant?.email && ctx.authClient) {
-      const creds = await ctx.authClient.fetchCredentials(tenant.email, "runner");
-      authToken = creds?.OBSIDIAN_AUTH_TOKEN;
+    if (!tenant?.email || !ctx.authClient) {
+      return c.json({ error: "Tenant email or auth service not configured" }, 400);
     }
 
-    if (!authToken) {
-      authToken = process.env.OBSIDIAN_AUTH_TOKEN;
-    }
+    const creds = await ctx.authClient.fetchCredentials(tenant.email, "runner");
+    const authToken = creds?.OBSIDIAN_AUTH_TOKEN;
 
     if (!authToken) {
-      return c.json({ error: "Obsidian auth token not configured" }, 400);
+      return c.json({ error: "Obsidian auth token not configured — set it in the portal" }, 400);
     }
 
     try {
