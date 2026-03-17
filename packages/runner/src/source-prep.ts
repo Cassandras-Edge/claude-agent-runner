@@ -85,6 +85,14 @@ export async function syncVault(sendStatus?: (status: string) => void): Promise<
       { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
     );
 
+    // Configure sync: bidirectional mode, all file types (including .py, .json)
+    execSync(
+      ["ob", "sync-config", "--path", state.WORKSPACE, "--mode", "bidirectional", "--file-types", "image,audio,video,pdf,unsupported"]
+        .map(a => JSON.stringify(a))
+        .join(" "),
+      { stdio: "pipe", timeout: 10_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+    );
+
     // Blocking sync with progress reporting
     sendStatus?.("syncing vault");
     await new Promise<void>((resolve, reject) => {
