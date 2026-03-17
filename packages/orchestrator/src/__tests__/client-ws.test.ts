@@ -247,12 +247,18 @@ describe("Client WebSocket", () => {
       await subPromise;
 
       const ctxPromise = waitForFrame(ws, (f) => f.type === "context_state");
-      bridge.emit("context_state:s1", 12345, false);
+      bridge.emit("context_state:s1", {
+        context_tokens: 12345,
+        context_window: 200000,
+        output_tokens: 500,
+        compacted: false,
+      });
       const frame = await ctxPromise;
 
       expect(frame.type).toBe("context_state");
       expect(frame.session_id).toBe("s1");
       expect(frame.context_tokens).toBe(12345);
+      expect(frame.context_window).toBe(200000);
       ws.close();
     });
 

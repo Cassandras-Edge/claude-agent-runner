@@ -356,7 +356,11 @@ export interface RunnerSessionInitMessage extends WsCorrelation {
 export interface ContextStateFrame extends WsCorrelation {
   type: "context_state";
   session_id: string;
-  context_tokens: number;
+  context_tokens: number;       // actual input tokens used (context size)
+  context_window?: number;      // model's max context window
+  output_tokens?: number;       // output tokens this turn
+  cache_read_tokens?: number;   // cached tokens read
+  cache_creation_tokens?: number; // cached tokens created
   compacted?: boolean;
 }
 

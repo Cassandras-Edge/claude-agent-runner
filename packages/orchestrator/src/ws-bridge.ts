@@ -95,14 +95,17 @@ export class WsBridge extends EventEmitter {
             logger.debug("orchestrator.ws_bridge", "runner_context_state", {
               session_id: sessionId,
               context_tokens: (msg as any).context_tokens,
+              context_window: (msg as any).context_window,
+              output_tokens: (msg as any).output_tokens,
               compacted: (msg as any).compacted,
             });
             this.sessions.updateContextTokens(sessionId, (msg as any).context_tokens);
             if ((msg as any).compacted) {
               this.sessions.incrementCompactCount(sessionId);
             }
-            this.emit(`context_state:${sessionId}`, (msg as any).context_tokens, (msg as any).compacted);
-            this.emit("context_state", sessionId, (msg as any).context_tokens, (msg as any).compacted);
+            // Forward the full context state to subscribers
+            this.emit(`context_state:${sessionId}`, msg);
+            this.emit("context_state", sessionId, msg);
             break;
 
           case "context_result":

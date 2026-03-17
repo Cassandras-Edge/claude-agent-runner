@@ -115,8 +115,8 @@ const docker: ContainerManager = RUNNER_BACKEND === "k8s"
 const bridge = new WsBridge(sessions, WS_PORT);
 bridge.setDb(db);
 const autoCompactor = new AutoCompactor(bridge, sessions);
-bridge.on("context_state", (sessionId: string, contextTokens: number) => {
-  autoCompactor.onContextState(sessionId, contextTokens);
+bridge.on("context_state", (sessionId: string, msg: any) => {
+  autoCompactor.onContextState(sessionId, msg.context_tokens ?? msg);
 });
 bridge.on("status", (sessionId: string, status: string) => {
   autoCompactor.onStatusChange(sessionId, status);

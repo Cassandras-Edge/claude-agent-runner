@@ -297,18 +297,23 @@ function handleSubscribe(ws: WebSocket, frame: SubscribeFrame, ctx: HandleContex
     });
   };
 
-  const onContextState = (contextTokens: number, compacted?: boolean) => {
+  const onContextState = (msg: any) => {
     sendFrame(ws, {
       type: "context_state",
       session_id,
-      context_tokens: contextTokens,
-      compacted,
+      context_tokens: msg.context_tokens,
+      context_window: msg.context_window,
+      output_tokens: msg.output_tokens,
+      cache_read_tokens: msg.cache_read_tokens,
+      cache_creation_tokens: msg.cache_creation_tokens,
+      compacted: msg.compacted,
     });
     logger.debug("client-ws", "frame_out", {
       direction: "out",
       frame_type: "context_state",
       session_id,
-      context_tokens: contextTokens,
+      context_tokens: msg.context_tokens,
+      context_window: msg.context_window,
     });
   };
 

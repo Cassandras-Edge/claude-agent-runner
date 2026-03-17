@@ -80,6 +80,35 @@ export async function runTurn(
     state.session = null;
   }, FIRST_EVENT_TIMEOUT_MS);
 
+  // Heartbeat: if no events arrive for 10s during a turn, notify the client
+  // so they know the runner is alive (e.g. API is retrying 529s)
+  let lastEventTime = Date.now();
+  const HEARTBEAT_INTERVAL_MS = 10_000;
+  const heartbeat = setInterval(() => {
+    const silenceMs = Date.now() - lastEventTime;
+    if (silenceMs >= HEARTBEAT_INTERVAL_MS && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: "event",
+        session_id: state.SESSION_ID,
+        event: {
+          type: "system",
+          subtype: "heartbeat",
+          silence_ms: silenceMs,
+          message: eventCount === 0
+            ? "Waiting for API response (may be retrying)…"
+            : "Still processing…",
+        },
+        request_id: requestId,
+        trace_id: traceId,
+      }));
+      logger.debug("runner.agent", "heartbeat_sent", {
+        session_id: state.SESSION_ID,
+        silence_ms: silenceMs,
+        event_count: eventCount,
+      });
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
   try {
     for await (const event of state.session.stream()) {
       if (eventCount === 0) {
@@ -87,6 +116,7 @@ export async function runTurn(
       }
 
       eventCount++;
+      lastEventTime = Date.now();
 
       if (!state.sdkSessionId && "session_id" in event && (event as any).session_id) {
         state.sdkSessionId = (event as any).session_id;
@@ -128,12 +158,22 @@ export async function runTurn(
 
       if ((event as any).type === "result" && (event as any).modelUsage && ws.readyState === WebSocket.OPEN) {
         const modelEntries = Object.values((event as any).modelUsage as Record<string, any>);
-        const contextWindow = modelEntries[0]?.contextWindow ?? 0;
-        if (contextWindow > 0) {
+        const usage = modelEntries[0];
+        if (usage) {
+          // Send actual token usage (inputTokens = context used) + context window max
+          const inputTokens = usage.inputTokens ?? 0;
+          const outputTokens = usage.outputTokens ?? 0;
+          const contextWindow = usage.contextWindow ?? 0;
+          const cacheRead = usage.cacheReadInputTokens ?? 0;
+          const cacheCreation = usage.cacheCreationInputTokens ?? 0;
           ws.send(JSON.stringify({
             type: "context_state",
             session_id: state.SESSION_ID,
-            context_tokens: contextWindow,
+            context_tokens: inputTokens,
+            context_window: contextWindow,
+            output_tokens: outputTokens,
+            cache_read_tokens: cacheRead,
+            cache_creation_tokens: cacheCreation,
             compacted: overrides?.forceCompact ?? false,
             request_id: requestId,
             trace_id: traceId,
@@ -193,6 +233,7 @@ export async function runTurn(
     throw iterErr;
   } finally {
     clearTimeout(firstEventTimer);
+    clearInterval(heartbeat);
   }
 
   if (eventCount === 0) {
