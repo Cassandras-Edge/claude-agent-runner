@@ -45,10 +45,7 @@ export function syncVault(): void {
     throw new Error("OBSIDIAN_AUTH_TOKEN is required for vault sessions");
   }
 
-  // Use a stable device name per vault so Obsidian recognizes the cached PVC
-  // and only pulls the delta instead of re-syncing everything.
-  const sanitizedVault = state.VAULT.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-  const deviceName = `runner-${sanitizedVault}`;
+  const deviceName = `runner-${state.SESSION_ID.slice(0, 8)}`;
   const passwordArgs = process.env.OBSIDIAN_E2EE_PASSWORD
     ? ["--password", process.env.OBSIDIAN_E2EE_PASSWORD]
     : [];
