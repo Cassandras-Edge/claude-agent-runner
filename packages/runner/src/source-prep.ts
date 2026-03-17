@@ -85,6 +85,25 @@ export function syncVault(): void {
     throw new Error(`Vault sync failed: ${message}`);
   }
 
+  // Clone config repo to overlay .claude/ (rules, settings) that Obsidian doesn't sync
+  const configRepo = process.env.RUNNER_CONFIG_REPO;
+  if (configRepo) {
+    try {
+      let configUrl = configRepo;
+      if (state.GIT_TOKEN && configUrl.startsWith("https://")) {
+        configUrl = configUrl.replace("https://", `https://x-access-token:${state.GIT_TOKEN}@`);
+      }
+      const tmpDir = "/tmp/vault-config";
+      execSync(`git clone --depth 1 ${configUrl} ${tmpDir}`, { stdio: "pipe", timeout: 30_000 });
+      execSync(`cp -r ${tmpDir}/.claude ${state.WORKSPACE}/`, { stdio: "pipe" });
+      execSync(`rm -rf ${tmpDir}`, { stdio: "pipe" });
+      logger.info("runner.vault", "config_repo_overlaid", { repo: configRepo });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn("runner.vault", "config_repo_clone_failed", { repo: configRepo, error: message });
+    }
+  }
+
   const lockPath = `${state.WORKSPACE}/.obsidian/.sync.lock`;
   try {
     if (existsSync(lockPath)) {

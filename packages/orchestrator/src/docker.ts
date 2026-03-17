@@ -6,6 +6,7 @@ export const FORWARDED_RUNNER_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
   "GIT_TOKEN",
   "GITHUB_TOKEN",
+  "RUNNER_CONFIG_REPO",
 ]);
 
 export interface SpawnConfig {
