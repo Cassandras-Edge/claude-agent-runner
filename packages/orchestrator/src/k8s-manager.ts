@@ -125,13 +125,11 @@ export class K8sManager implements ContainerManager {
     const volumeMounts: k8s.V1VolumeMount[] = [];
     const volumes: k8s.V1Volume[] = [];
 
-    // Vault PVC: per-vault persistent workspace cache.
+    // Vault: shared PVC (pre-provisioned by Helm, kept fresh by vault-sync daemon).
     if (config.vault) {
       const sanitizedVault = config.vault.replace(/[^a-z0-9]/gi, "-").toLowerCase();
-      const vaultPvcName = `vault-${sanitizedVault}`;
-      await this.ensurePvc(vaultPvcName, targetNamespace, "vault-cache");
-      volumes.push({ name: "vault-cache", persistentVolumeClaim: { claimName: vaultPvcName } });
-      volumeMounts.push({ name: "vault-cache", mountPath: "/workspace" });
+      volumes.push({ name: "vault", persistentVolumeClaim: { claimName: `vault-${sanitizedVault}` } });
+      volumeMounts.push({ name: "vault", mountPath: "/workspace" });
     }
 
     // Agent PVC: per-agent Claude config (memory, transcripts) — replaces shared sessions PVC.

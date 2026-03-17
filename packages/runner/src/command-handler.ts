@@ -11,7 +11,7 @@ import { executeContextOp, emitSnapshot } from "./context-ops.js";
 import { PATCHED_CLI_PATH } from "./config.js";
 import { logger, runWithLogContext } from "./logger.js";
 import { createOrResumeSession } from "./session-lifecycle.js";
-import { cloneRepo, stopVaultSync, syncVault } from "./source-prep.js";
+import { cloneRepo, prepareVault } from "./source-prep.js";
 import { maybeHandleForkAndSteer, runTurn } from "./run-turn.js";
 import { state } from "./state.js";
 
@@ -749,10 +749,7 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
         ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "cloning" }));
         cloneRepo();
       } else if (state.VAULT) {
-        ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "syncing" }));
-        await syncVault((status) => {
-          ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status }));
-        });
+        prepareVault();
       }
 
       if (!existsSync(state.WORKSPACE)) {
@@ -805,7 +802,6 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
 
   if (msg.type === "shutdown") {
     logger.info("runner.ws", "shutdown_requested", { session_id: state.SESSION_ID });
-    stopVaultSync();
     state.ipc?.disconnect();
     state.session?.close();
     ws.close();

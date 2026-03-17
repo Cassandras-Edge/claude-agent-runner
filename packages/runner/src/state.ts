@@ -1,5 +1,4 @@
 import type { SDKSession } from "@anthropic-ai/claude-agent-sdk";
-import type { ChildProcess } from "child_process";
 import type { DrainResult } from "./background-drainer.js";
 import type { MemIpcClient } from "./mem-ipc.js";
 
@@ -39,7 +38,6 @@ export const state = {
   forceCompactOnNextQuery: false,
   pendingCompactInstructions: undefined as string | undefined,
   activeCompactInstructions: undefined as string | undefined,
-  vaultSyncProcess: null as ChildProcess | null,
 
   pendingSteer: null as {
     message: string;

@@ -4,7 +4,7 @@ import type { OrchestratorCommand } from "@bugcat/claude-agent-runner-shared";
 import { ORCHESTRATOR_URL, initConfig } from "./config.js";
 import { handleMessage, preloadWarmSession } from "./command-handler.js";
 import { logger } from "./logger.js";
-import { cloneRepo, syncVault } from "./source-prep.js";
+import { cloneRepo, prepareVault } from "./source-prep.js";
 import { state } from "./state.js";
 
 initConfig();
@@ -22,10 +22,7 @@ function connect(): void {
           ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "cloning" }));
           cloneRepo();
         } else if (state.VAULT) {
-          ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "syncing" }));
-          await syncVault((status) => {
-            ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status }));
-          });
+          prepareVault();
         }
 
         if (!existsSync(state.WORKSPACE)) {

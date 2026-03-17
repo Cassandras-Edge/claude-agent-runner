@@ -2,7 +2,7 @@ FROM node:22-alpine AS patcher
 
 # Install bun (runs patch-all.js) and Claude Code (source for JS extraction)
 RUN apk add --no-cache bash && \
-    npm install -g bun @anthropic-ai/claude-code@2.1.74 && \
+    npm install -g bun @anthropic-ai/claude-code@2.1.77 && \
     npm cache clean --force
 
 # Copy patch files
@@ -39,13 +39,10 @@ FROM node:22-alpine
 RUN apk add --no-cache git curl bash openssh-client
 
 # Install Claude Code CLI globally (required by agent SDK)
-RUN npm install -g @anthropic-ai/claude-code@2.1.74 && npm cache clean --force
+RUN npm install -g @anthropic-ai/claude-code@2.1.77 && npm cache clean --force
 
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
-
-# Install Obsidian headless CLI for vault sync
-RUN npm install -g obsidian-headless && npm cache clean --force
 
 # Create runner user in the node group (GID 1000).
 RUN adduser -S runner -G node
