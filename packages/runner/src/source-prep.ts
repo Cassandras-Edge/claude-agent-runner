@@ -70,28 +70,31 @@ export async function syncVault(sendStatus?: (status: string) => void): Promise<
     });
   }
 
+  // Check if sync is already configured on the cached PVC
+  const syncConfigPath = `${state.WORKSPACE}/.obsidian/sync.json`;
+  const alreadyConfigured = existsSync(syncConfigPath);
+
   try {
-    try {
+    if (!alreadyConfigured) {
+      // First time: set up sync with stable device name and configure
       execSync(
-        `ob sync-unlink --path ${JSON.stringify(state.WORKSPACE)}`,
+        ["ob", "sync-setup", "--vault", state.VAULT, "--path", state.WORKSPACE, ...passwordArgs, "--device-name", deviceName]
+          .map(a => JSON.stringify(a))
+          .join(" "),
+        { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+      );
+
+      execSync(
+        ["ob", "sync-config", "--path", state.WORKSPACE, "--mode", "bidirectional", "--file-types", "image,audio,video,pdf,unsupported"]
+          .map(a => JSON.stringify(a))
+          .join(" "),
         { stdio: "pipe", timeout: 10_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
       );
-    } catch {}
 
-    execSync(
-      ["ob", "sync-setup", "--vault", state.VAULT, "--path", state.WORKSPACE, ...passwordArgs, "--device-name", deviceName]
-        .map(a => JSON.stringify(a))
-        .join(" "),
-      { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
-    );
-
-    // Configure sync: bidirectional mode, all file types (including .py, .json)
-    execSync(
-      ["ob", "sync-config", "--path", state.WORKSPACE, "--mode", "bidirectional", "--file-types", "image,audio,video,pdf,unsupported"]
-        .map(a => JSON.stringify(a))
-        .join(" "),
-      { stdio: "pipe", timeout: 10_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
-    );
+      logger.info("runner.vault", "vault_sync_first_setup", { vault: state.VAULT, device: deviceName });
+    } else {
+      logger.info("runner.vault", "vault_sync_reusing_config", { vault: state.VAULT });
+    }
 
     // Blocking sync with progress reporting
     sendStatus?.("syncing vault");
