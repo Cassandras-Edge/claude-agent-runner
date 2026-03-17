@@ -156,16 +156,66 @@ export async function runTurn(
         event_subtype: (event as any).subtype,
       });
 
-      if ((event as any).type === "result" && (event as any).modelUsage && ws.readyState === WebSocket.OPEN) {
-        const modelEntries = Object.values((event as any).modelUsage as Record<string, any>);
-        const usage = modelEntries[0];
-        if (usage) {
-          // Send actual token usage (inputTokens = context used) + context window max
-          const inputTokens = usage.inputTokens ?? 0;
-          const outputTokens = usage.outputTokens ?? 0;
-          const contextWindow = usage.contextWindow ?? 0;
-          const cacheRead = usage.cacheReadInputTokens ?? 0;
-          const cacheCreation = usage.cacheCreationInputTokens ?? 0;
+      if ((event as any).type === "result" && ws.readyState === WebSocket.OPEN) {
+        // Extract token usage from the result event.
+        // Primary source: modelUsage (per-model breakdown, camelCase fields)
+        // Fallback: usage (aggregate, snake_case fields from Anthropic API)
+        let inputTokens = 0;
+        let outputTokens = 0;
+        let contextWindow = 0;
+        let cacheRead = 0;
+        let cacheCreation = 0;
+
+        const modelUsage = (event as any).modelUsage;
+        if (modelUsage && typeof modelUsage === "object") {
+          const entries = Object.values(modelUsage as Record<string, any>);
+          const mu = entries[0];
+          if (mu) {
+            inputTokens = mu.inputTokens ?? 0;
+            outputTokens = mu.outputTokens ?? 0;
+            contextWindow = mu.contextWindow ?? 0;
+            cacheRead = mu.cacheReadInputTokens ?? 0;
+            cacheCreation = mu.cacheCreationInputTokens ?? 0;
+          }
+        }
+
+        // Fallback to top-level usage (snake_case) if modelUsage was empty
+        if (inputTokens === 0 && (event as any).usage) {
+          const u = (event as any).usage;
+          inputTokens = u.input_tokens ?? 0;
+          outputTokens = u.output_tokens ?? 0;
+          cacheRead = u.cache_read_input_tokens ?? 0;
+          cacheCreation = u.cache_creation_input_tokens ?? 0;
+        }
+
+        // Fallback context window from model name if SDK didn't provide it
+        if (contextWindow === 0) {
+          const model = overrides?.model || state.MODEL || "";
+          if (model.includes("[1m]") || model.includes("1m")) {
+            contextWindow = 1_000_000;
+          } else if (model.includes("opus")) {
+            contextWindow = 200_000;
+          } else if (model.includes("sonnet")) {
+            contextWindow = 200_000;
+          } else if (model.includes("haiku")) {
+            contextWindow = 200_000;
+          } else {
+            contextWindow = 200_000;
+          }
+        }
+
+        logger.info("runner.agent", "context_state_emit", {
+          session_id: state.SESSION_ID,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          context_window: contextWindow,
+          cache_read: cacheRead,
+          cache_creation: cacheCreation,
+          model_usage_keys: modelUsage ? Object.keys(modelUsage) : [],
+          has_usage: Boolean((event as any).usage),
+        });
+
+        if (inputTokens > 0 || outputTokens > 0) {
           ws.send(JSON.stringify({
             type: "context_state",
             session_id: state.SESSION_ID,
