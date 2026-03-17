@@ -45,7 +45,10 @@ export function syncVault(): void {
     throw new Error("OBSIDIAN_AUTH_TOKEN is required for vault sessions");
   }
 
-  const deviceName = `runner-${state.SESSION_ID.slice(0, 8)}`;
+  // Use a stable device name per vault so Obsidian recognizes the cached PVC
+  // and only pulls the delta instead of re-syncing everything.
+  const sanitizedVault = state.VAULT.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+  const deviceName = `runner-${sanitizedVault}`;
   const passwordArgs = process.env.OBSIDIAN_E2EE_PASSWORD
     ? ["--password", process.env.OBSIDIAN_E2EE_PASSWORD]
     : [];
@@ -93,12 +96,12 @@ export function syncVault(): void {
 
   // Obsidian doesn't sync dotfiles. Vault convention: put Claude config in `claude/`
   // (visible folder that syncs) and symlink `.claude` to it so the CLI discovers rules/skills.
+  // Use ln -sfn which overwrites any existing symlink.
   const claudeDir = `${state.WORKSPACE}/claude`;
-  const dotClaudeDir = `${state.WORKSPACE}/.claude`;
-  if (existsSync(claudeDir) && !existsSync(dotClaudeDir)) {
+  if (existsSync(claudeDir)) {
     try {
-      execSync(`ln -sfn ${claudeDir} ${dotClaudeDir}`, { stdio: "pipe" });
-      logger.info("runner.vault", "claude_dir_symlinked", { source: claudeDir, target: dotClaudeDir });
+      execSync(`ln -sfn ${claudeDir} ${state.WORKSPACE}/.claude`, { stdio: "pipe" });
+      logger.info("runner.vault", "claude_dir_symlinked", { source: claudeDir });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.warn("runner.vault", "claude_dir_symlink_failed", { error: message });
