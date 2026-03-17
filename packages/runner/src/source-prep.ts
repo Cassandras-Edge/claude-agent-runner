@@ -70,31 +70,30 @@ export async function syncVault(sendStatus?: (status: string) => void): Promise<
     });
   }
 
-  // Check if sync is already configured on the cached PVC
   const syncConfigPath = `${state.WORKSPACE}/.obsidian/sync.json`;
   const alreadyConfigured = existsSync(syncConfigPath);
 
   try {
     if (!alreadyConfigured) {
-      // First time: set up sync with stable device name and configure
+      // First time on this PVC: full setup
       execSync(
         ["ob", "sync-setup", "--vault", state.VAULT, "--path", state.WORKSPACE, ...passwordArgs, "--device-name", deviceName]
           .map(a => JSON.stringify(a))
           .join(" "),
         { stdio: "pipe", timeout: 30_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
       );
-
-      execSync(
-        ["ob", "sync-config", "--path", state.WORKSPACE, "--mode", "bidirectional", "--file-types", "image,audio,video,pdf,unsupported"]
-          .map(a => JSON.stringify(a))
-          .join(" "),
-        { stdio: "pipe", timeout: 10_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
-      );
-
       logger.info("runner.vault", "vault_sync_first_setup", { vault: state.VAULT, device: deviceName });
     } else {
-      logger.info("runner.vault", "vault_sync_reusing_config", { vault: state.VAULT });
+      logger.info("runner.vault", "vault_sync_reusing_config", { vault: state.VAULT, device: deviceName });
     }
+
+    // Always set config: unique device name, bidirectional mode, all file types
+    execSync(
+      ["ob", "sync-config", "--path", state.WORKSPACE, "--device-name", deviceName, "--mode", "bidirectional", "--file-types", "image,audio,video,pdf,unsupported"]
+        .map(a => JSON.stringify(a))
+        .join(" "),
+      { stdio: "pipe", timeout: 10_000, env: { ...process.env, OBSIDIAN_AUTH_TOKEN: obsidianAuthToken } },
+    );
 
     // Blocking sync with progress reporting
     sendStatus?.("syncing vault");
