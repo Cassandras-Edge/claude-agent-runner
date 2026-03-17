@@ -91,6 +91,29 @@ export async function resolveCredentials(
   return { ...accountCreds, ...vaultCreds };
 }
 
+export async function resolveVaultMcpServers(
+  ctx: AppContext,
+  tenantId?: string,
+  vaultName?: string,
+): Promise<Record<string, { type: "http" | "sse"; url: string; headers?: Record<string, string> }> | null> {
+  if (!ctx.authClient || !tenantId || !vaultName || !ctx.tenants) return null;
+
+  const tenant = ctx.tenants.get(tenantId);
+  if (!tenant?.email) return null;
+
+  try {
+    const servers = await ctx.authClient.fetchCredentials(tenant.email, `runner:${vaultName}:mcp`);
+    if (servers && Object.keys(servers).length > 0) {
+      // Auth store returns flat key-value — MCP config is stored as JSON string
+      // under a single key, or as the full object if synced directly
+      return servers as any;
+    }
+  } catch {
+    // Non-fatal — vault just won't have per-vault MCP servers
+  }
+  return null;
+}
+
 export async function spawnSession(
   ctx: AppContext,
   sessionId: string,
@@ -109,6 +132,18 @@ export async function spawnSession(
     branch: body.branch,
     request_id: requestId,
   });
+
+  // Merge per-vault MCP servers (from portal config) with client-provided ones
+  const vaultMcp = await resolveVaultMcpServers(ctx, tenantId, body.vault);
+  if (vaultMcp) {
+    body.mcpServers = { ...vaultMcp, ...body.mcpServers };
+    logger.info("orchestrator.session", "vault_mcp_servers_merged", {
+      session_id: sessionId,
+      vault: body.vault,
+      vault_servers: Object.keys(vaultMcp),
+      total_servers: Object.keys(body.mcpServers || {}).length,
+    });
+  }
 
   const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length;
   if (canUseWarmPool) {
