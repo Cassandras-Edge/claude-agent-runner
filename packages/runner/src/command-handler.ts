@@ -459,14 +459,15 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
       logger.info("runner.ws", "compact_instructions_override_set", { session_id: state.SESSION_ID });
     }
     if (msg.effort) {
-      state.EFFORT = msg.effort;
+      // "none" clears the effort override — SDK uses its default (no extended thinking)
+      state.EFFORT = msg.effort === "none" ? undefined : msg.effort;
       // Effort is passed via session options on next session creation.
       // Close session to pick up the new effort level.
       if (state.session) {
         state.session.close();
         state.session = null;
       }
-      logger.info("runner.ws", "effort_override_set", { session_id: state.SESSION_ID, effort: msg.effort });
+      logger.info("runner.ws", "effort_override_set", { session_id: state.SESSION_ID, effort: state.EFFORT ?? "none" });
     }
     if (msg.permission_mode) {
       const newMode = msg.permission_mode;

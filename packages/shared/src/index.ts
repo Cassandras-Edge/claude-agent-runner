@@ -492,7 +492,7 @@ export interface OrchestratorRewindCommand extends WsCorrelation {
   user_message_uuid: string;
 }
 
-export type EffortLevel = "low" | "medium" | "high" | "max";
+export type EffortLevel = "none" | "low" | "medium" | "high" | "max";
 
 export interface OrchestratorSetOptionsCommand extends WsCorrelation {
   type: "set_options";
