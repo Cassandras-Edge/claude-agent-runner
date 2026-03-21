@@ -1,29 +1,21 @@
 {
   "id": "sdk-ipc",
-  "description": "Unix socket exposing SDK NDJSON protocol for programmatic control of interactive sessions",
+  "description": "Unix socket for SDK NDJSON protocol — works in both interactive and print modes",
   "target": "js-only",
   "tested_versions": ["2.1.81"],
   "steps": [
     {
       "type": "extract",
-      "id": "queue_var",
-      "scope": "region",
-      "anchor": "cli_message_loop_started",
-      "pattern": "(\\w+)\\.enqueue\\(\\{type:\"system\",subtype:\"status\"",
-      "store_as": "QUEUE_VAR"
-    },
-    {
-      "type": "extract",
       "id": "session_fn",
       "scope": "region",
-      "anchor": "cli_message_loop_started",
-      "pattern": "session_id:(\\w+)\\(\\)",
+      "anchor": "queue-operation",
+      "pattern": "let \\w+=(\\w+)\\(\\),\\w+=\\{type:\"queue-operation\"",
       "store_as": "SESSION_FN"
     },
     {
       "type": "insert_after",
       "id": "inject_sdk_ipc",
-      "marker": "aT(\"info\",\"cli_message_loop_started\");",
+      "marker": "C$_(\"enqueue\",typeof _.value===\"string\"?_.value:void 0)}",
       "code_file": "patch-code.js.tmpl"
     }
   ]
