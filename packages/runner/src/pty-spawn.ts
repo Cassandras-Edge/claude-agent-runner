@@ -39,10 +39,15 @@ export async function spawnWithPty(overrides?: {
   };
 
   const claudePath = PATCHED_CLI_PATH || "claude";
-  const claudeArgs: string[] = [];
+  const claudeArgs: string[] = [
+    // Run in SDK/print mode — same as the Agent SDK spawns it.
+    // This is required for the sdk-ipc patch to fire (it hooks into C3$).
+    "--print",
+    "--input-format", "stream-json",
+    "--output-format", "stream-json",
+    "--verbose",
+  ];
 
-  // In PTY mode we run Claude Code interactively (no --print).
-  // Use --dangerously-skip-permissions since the runner manages permissions.
   if (state.PERMISSION_MODE === "bypassPermissions") {
     claudeArgs.push("--dangerously-skip-permissions");
   }
@@ -64,37 +69,24 @@ export async function spawnWithPty(overrides?: {
     claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
   }
 
-  // Use `script` to allocate a PTY (portable, no native deps).
-  // macOS: script -q /dev/null command args...
-  // Linux: script -qc "command args..." /dev/null
-  const platform = process.platform;
-  let spawnCmd: string;
-  let spawnArgs: string[];
-
+  // Spawn directly — no PTY needed in print mode.
+  // The sdk-ipc socket provides the programmatic channel, and
+  // Remote Control provides web/mobile access.
+  // Future: interactive mode + PTY for terminal relay.
   const executable = PATCHED_CLI_PATH ? "bun" : claudePath;
   const execArgs = PATCHED_CLI_PATH
     ? [PATCHED_CLI_PATH, ...claudeArgs]
     : claudeArgs;
 
-  if (platform === "darwin") {
-    spawnCmd = "script";
-    spawnArgs = ["-q", "/dev/null", executable, ...execArgs];
-  } else {
-    // Linux
-    spawnCmd = "script";
-    const fullCmd = [executable, ...execArgs].map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-    spawnArgs = ["-qc", fullCmd, "/dev/null"];
-  }
-
   logger.info("runner.pty", "spawning", {
     session_id: state.SESSION_ID,
-    cmd: spawnCmd,
-    args: spawnArgs.slice(0, 5),
+    executable,
+    args: execArgs.slice(0, 8),
     sdk_socket: sdkSocketPath,
     mem_socket: memSocketPath,
   });
 
-  const child = spawn(spawnCmd, spawnArgs, {
+  const child = spawn(executable, execArgs, {
     env: childEnv,
     cwd: state.WORKSPACE || process.cwd(),
     stdio: ["pipe", "pipe", "pipe"],
