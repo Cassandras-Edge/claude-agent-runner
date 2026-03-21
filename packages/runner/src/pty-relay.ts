@@ -1,5 +1,4 @@
 import WebSocket from "ws";
-import { execSync } from "child_process";
 import { logger } from "./logger.js";
 import { state } from "./state.js";
 
@@ -61,22 +60,15 @@ export function handlePtyInput(msg: { data?: string; type?: string; cols?: numbe
   const proc = state.ptyProcess;
   if (!proc || !proc.stdin) return;
 
-  // Resize event — use stty on the PTY's stdin fd to set the window size,
+  // Resize event — send xterm resize escape sequence to the PTY,
   // then SIGWINCH the process group so the TUI re-renders.
   if (msg.type === "pty_resize" && msg.cols && msg.rows) {
-    try {
-      // stty via the child's stdin fd
-      const pid = proc.pid;
-      if (pid) {
-        execSync(`stty cols ${msg.cols} rows ${msg.rows}`, {
-          stdio: [proc.stdin!, "pipe", "pipe"],
-        });
-        // Signal the process group to re-render
-        process.kill(-pid, "SIGWINCH");
-      }
-    } catch {
-      // Fallback: send xterm resize escape sequence
-      proc.stdin!.write(`\x1b[8;${msg.rows};${msg.cols}t`);
+    // Send xterm resize sequence
+    proc.stdin!.write(`\x1b[8;${msg.rows};${msg.cols}t`);
+    // SIGWINCH the process group
+    const pid = proc.pid;
+    if (pid) {
+      try { process.kill(-pid, "SIGWINCH"); } catch {}
     }
     logger.debug("runner.pty-relay", "resize", { cols: msg.cols, rows: msg.rows });
     return;
