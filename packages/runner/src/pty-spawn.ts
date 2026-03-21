@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "child_process";
 import { randomUUID } from "crypto";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { join } from "path";
 import { SdkIpcSession } from "./sdk-ipc-session.js";
 import { buildClaudeChildEnv } from "./helpers.js";
 import { PATCHED_CLI_PATH } from "./config.js";
@@ -34,6 +35,25 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     CLAUDE_MEM_SOCKET: memSocketPath,
     ENABLE_TOOL_SEARCH: "false",
   };
+
+  // Pre-accept workspace trust so Claude Code doesn't prompt in interactive mode.
+  // The trust file lives in ~/.claude/projects/<workspace-path-hash>/settings.json.
+  // Claude Code derives the path from cwd, so we write it for /workspace.
+  const home = childEnv.HOME || "/home/runner";
+  const workspacePath = state.WORKSPACE || "/workspace";
+  const projectDir = join(home, ".claude", "projects", `-${workspacePath.replace(/\//g, "-").replace(/^-/, "")}`);
+  try {
+    mkdirSync(projectDir, { recursive: true });
+    const trustFile = join(projectDir, "settings.json");
+    if (!existsSync(trustFile)) {
+      writeFileSync(trustFile, JSON.stringify({ isTrusted: true }));
+      logger.info("runner.pty", "workspace_trust_preaccepted", { path: trustFile });
+    }
+  } catch (err) {
+    logger.warn("runner.pty", "workspace_trust_write_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   const executable = PATCHED_CLI_PATH ? "bun" : "claude";
   const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
