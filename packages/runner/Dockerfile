@@ -1,9 +1,9 @@
 FROM node:22-alpine AS patcher
 
 # Install bun (runs patch-all.js) and Claude Code (source for JS extraction)
-# NOTE: bump this comment to bust BuildKit cache when changing patches: v2
+ARG CLAUDE_CODE_VERSION=2.1.81
 RUN apk add --no-cache bash && \
-    npm install -g bun @anthropic-ai/claude-code@2.1.81 && \
+    npm install -g bun @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && \
     npm cache clean --force
 
 # Copy patch files
