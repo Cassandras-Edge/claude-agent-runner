@@ -2,7 +2,7 @@ FROM node:22-alpine AS patcher
 
 # Install bun (runs patch-all.js) and Claude Code (source for JS extraction)
 RUN apk add --no-cache bash && \
-    npm install -g bun @anthropic-ai/claude-code@2.1.77 && \
+    npm install -g bun @anthropic-ai/claude-code@2.1.81 && \
     npm cache clean --force
 
 # Copy patch files
