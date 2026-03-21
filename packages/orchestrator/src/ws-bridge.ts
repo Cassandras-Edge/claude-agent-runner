@@ -696,7 +696,7 @@ export class WsBridge extends EventEmitter {
   sendPtyResize(sessionId: string, cols: number, rows: number): boolean {
     const ws = this.connections.get(sessionId);
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(JSON.stringify({ type: "pty_input", type_: "pty_resize", cols, rows }));
+    ws.send(JSON.stringify({ type: "pty_resize", cols, rows }));
     return true;
   }
 

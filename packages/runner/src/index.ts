@@ -67,8 +67,8 @@ function connect(): void {
       return;
     }
 
-    // Route PTY input messages directly to the PTY relay
-    if ((msg as any).type === "pty_input" && state.ptyMode) {
+    // Route PTY input/resize messages directly to the PTY relay
+    if (((msg as any).type === "pty_input" || (msg as any).type === "pty_resize") && state.ptyMode) {
       handlePtyInput(msg as any);
       return;
     }
