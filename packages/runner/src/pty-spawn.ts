@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "child_process";
 import { randomUUID } from "crypto";
+import { existsSync } from "fs";
 import { SdkIpcSession } from "./sdk-ipc-session.js";
 import { buildClaudeChildEnv } from "./helpers.js";
 import { PATCHED_CLI_PATH } from "./config.js";
@@ -13,16 +14,13 @@ export interface PtyHandle {
 }
 
 /**
- * Spawn Claude Code in INTERACTIVE mode with a real PTY.
+ * Spawn Claude Code with the sdk-ipc socket for programmatic control.
  *
- * Uses `script` as a portable PTY allocator. The process gets a full TUI
- * (Ink rendering) while the sdk-ipc socket provides programmatic control.
- * Remote Control is enabled via --remote-control CLI flag.
+ * If `script` is available, spawns in interactive mode with a real PTY
+ * (full TUI + Remote Control + sdk-ipc). Otherwise, spawns in print mode
+ * (headless + Remote Control via control request + sdk-ipc).
  *
- * Three access channels on one process:
- *   1. PTY bytes (relayed to thin client for terminal access)
- *   2. sdk-ipc socket (runner programmatic control via ED())
- *   3. Remote Control (claude.ai/code web/mobile access)
+ * Both modes get the sdk-ipc socket since the patch is module-level.
  */
 export async function spawnWithPty(): Promise<PtyHandle> {
   const sdkSocketPath = `/tmp/claude-sdk-ipc-${state.SESSION_ID || randomUUID()}.sock`;
@@ -37,52 +35,64 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     ENABLE_TOOL_SEARCH: "false",
   };
 
-  // Build Claude Code args for interactive mode (no --print)
-  const claudeArgs: string[] = [
-    "--remote-control",
-    "--dangerously-skip-permissions",
-  ];
-
-  if (state.MODEL) {
-    claudeArgs.push("--model", state.MODEL);
-  }
-  if (state.SYSTEM_PROMPT) {
-    claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
-  } else if (state.APPEND_SYSTEM_PROMPT) {
-    claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
-  }
-  if (state.WORKSPACE) {
-    claudeArgs.push("--add-dir", state.WORKSPACE);
-  }
-
-  // Build the full command
   const executable = PATCHED_CLI_PATH ? "bun" : "claude";
-  const execArgs = PATCHED_CLI_PATH
-    ? [PATCHED_CLI_PATH, ...claudeArgs]
-    : claudeArgs;
+  const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
 
-  // Use `script` to allocate a real PTY
-  const platform = process.platform;
   let spawnCmd: string;
   let spawnArgs: string[];
 
-  if (platform === "darwin") {
-    spawnCmd = "script";
-    spawnArgs = ["-q", "/dev/null", executable, ...execArgs];
-  } else {
-    spawnCmd = "script";
-    const fullCmd = [executable, ...execArgs]
-      .map(a => `'${a.replace(/'/g, "'\\''")}'`)
-      .join(" ");
-    spawnArgs = ["-qc", fullCmd, "/dev/null"];
-  }
+  if (hasScript) {
+    // Interactive mode with PTY — full TUI, RC via CLI flag
+    const claudeArgs = [
+      "--remote-control",
+      "--dangerously-skip-permissions",
+    ];
+    if (state.MODEL) claudeArgs.push("--model", state.MODEL);
+    if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
+    else if (state.APPEND_SYSTEM_PROMPT) claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
+    if (state.WORKSPACE) claudeArgs.push("--add-dir", state.WORKSPACE);
 
-  logger.info("runner.pty", "spawning_interactive", {
-    session_id: state.SESSION_ID,
-    cmd: spawnCmd,
-    claude_args: claudeArgs,
-    sdk_socket: sdkSocketPath,
-  });
+    const execArgs = PATCHED_CLI_PATH ? [PATCHED_CLI_PATH, ...claudeArgs] : claudeArgs;
+
+    if (process.platform === "darwin") {
+      spawnCmd = "script";
+      spawnArgs = ["-q", "/dev/null", executable, ...execArgs];
+    } else {
+      spawnCmd = "script";
+      const fullCmd = [executable, ...execArgs].map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+      spawnArgs = ["-qc", fullCmd, "/dev/null"];
+    }
+
+    logger.info("runner.pty", "spawning_interactive", {
+      session_id: state.SESSION_ID,
+      mode: "pty",
+      claude_args: claudeArgs,
+      sdk_socket: sdkSocketPath,
+    });
+  } else {
+    // Print mode fallback — no PTY, but sdk-ipc + RC still work
+    const claudeArgs = [
+      "--print",
+      "--input-format", "stream-json",
+      "--output-format", "stream-json",
+      "--verbose",
+      "--dangerously-skip-permissions",
+    ];
+    if (state.MODEL) claudeArgs.push("--model", state.MODEL);
+    if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
+    else if (state.APPEND_SYSTEM_PROMPT) claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
+    if (state.WORKSPACE) claudeArgs.push("--add-dir", state.WORKSPACE);
+
+    spawnCmd = executable;
+    spawnArgs = PATCHED_CLI_PATH ? [PATCHED_CLI_PATH, ...claudeArgs] : claudeArgs;
+
+    logger.info("runner.pty", "spawning_headless", {
+      session_id: state.SESSION_ID,
+      mode: "print",
+      reason: "script_not_available",
+      sdk_socket: sdkSocketPath,
+    });
+  }
 
   const child = spawn(spawnCmd, spawnArgs, {
     env: childEnv,
@@ -109,11 +119,6 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     session_id: state.SESSION_ID,
     sdk_session_id: session.sessionId,
   });
-
-  // Configure MCP servers if specified
-  // Note: in interactive mode, MCP config comes from project settings.
-  // This is for runner-injected MCP servers that aren't in project config.
-  // Uses sdk-ipc prompt injection to run /mcp commands if needed.
 
   return { process: child, session, socketPath: sdkSocketPath };
 }
