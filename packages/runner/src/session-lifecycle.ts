@@ -100,7 +100,8 @@ export async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession 
     const { spawnWithPty } = await import("./pty-spawn.js");
     const handle = await spawnWithPty();
     state.ptyMode = true;
-    state.rcSessionUrl = handle.rcSessionUrl;
+    // RC is enabled via --remote-control CLI flag in interactive mode.
+    // The session URL will be visible in the TUI output.
     return handle.session;
   }
 
