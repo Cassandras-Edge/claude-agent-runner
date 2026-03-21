@@ -4,6 +4,7 @@ import { logger } from "./logger.js";
 
 export const FORWARDED_RUNNER_ENV_KEYS = new Set([
   "CLAUDE_CODE_OAUTH_TOKEN",
+  "CLAUDE_PTY_MODE",
   "GIT_TOKEN",
   "GITHUB_TOKEN",
 ]);
