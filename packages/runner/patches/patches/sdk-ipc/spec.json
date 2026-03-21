@@ -6,14 +6,6 @@
   "steps": [
     {
       "type": "extract",
-      "id": "audit_fn",
-      "scope": "global",
-      "anchor": "queue-operation",
-      "pattern": "function ([\\w$]+)\\([\\w$]+,[\\w$]+\\)\\{let [\\w$]+=[\\w$]+\\(\\),[\\w$]+=\\{type:\"queue-operation\"",
-      "store_as": "AUDIT_FN"
-    },
-    {
-      "type": "extract",
       "id": "session_fn",
       "scope": "global",
       "anchor": "queue-operation",
@@ -21,9 +13,17 @@
       "store_as": "SESSION_FN"
     },
     {
-      "type": "insert_after",
+      "type": "extract",
+      "id": "enqueue_later_fn",
+      "scope": "global",
+      "anchor": "priority:_.priority??\"later\"",
+      "pattern": "\\}function ([\\w$]+)\\([\\w$]+\\)\\{[\\w$]+\\.push\\(\\{\\.\\.\\.[\\w$]+,priority:[\\w$]+\\.priority\\?\\?\"later\"",
+      "store_as": "LATER_FN"
+    },
+    {
+      "type": "insert_before",
       "id": "inject_sdk_ipc",
-      "marker": "{{AUDIT_FN}}(\"enqueue\",typeof _.value===\"string\"?_.value:void 0)}",
+      "marker": "function {{LATER_FN}}(",
       "code_file": "patch-code.js.tmpl"
     }
   ]
