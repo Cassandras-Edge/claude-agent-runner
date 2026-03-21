@@ -8,7 +8,7 @@ Deploys on **Docker** (single host) or **Kubernetes** (k3s/k8s) with multi-tenan
 
 Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/sdk) with a patched CLI for background MCP tools, live IPC, session commands, and custom compaction prompts.
 
-**Tested against Claude Code v2.1.74.**
+**Tested against Claude Code v2.1.77.**
 
 ## What This Adds Beyond Stock Claude
 
