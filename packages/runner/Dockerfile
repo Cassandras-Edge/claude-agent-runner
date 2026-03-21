@@ -37,10 +37,11 @@ RUN npm run build --workspace=packages/runner
 FROM node:22-alpine
 
 # Install git and common tools for agent work
-RUN apk add --no-cache git curl bash openssh-client
+# util-linux provides `script` for PTY allocation (interactive mode)
+RUN apk add --no-cache git curl bash openssh-client util-linux
 
 # Install Claude Code CLI globally (required by agent SDK)
-RUN npm install -g @anthropic-ai/claude-code@2.1.77 && npm cache clean --force
+RUN npm install -g @anthropic-ai/claude-code@2.1.81 && npm cache clean --force
 
 # Install bun runtime (needed for running patched CLI)
 RUN npm install -g bun && npm cache clean --force
