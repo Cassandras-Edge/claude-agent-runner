@@ -811,7 +811,10 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
 }
 
 export async function preloadWarmSession(ws: WebSocket): Promise<void> {
-  if (!state.session && !state.REPO && !state.VAULT) {
+  // In PTY mode, always eagerly spawn so the PTY relay has something to relay.
+  // In SDK mode, only preload for warm pods (no repo/vault).
+  const shouldPreload = process.env.CLAUDE_PTY_MODE === "true" || (!state.REPO && !state.VAULT);
+  if (!state.session && shouldPreload) {
     try {
       state.session = await createOrResumeSession(ws);
       logger.info("runner.ws", "warm_session_preloaded");
