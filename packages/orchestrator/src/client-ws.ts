@@ -39,8 +39,36 @@ export function attachClientWs(
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
+  // PTY attach WebSocket server (separate from main client WS)
+  const ptyWss = new WebSocketServer({ noServer: true });
+
   httpServer.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url || "/", `http://${request.headers.host}`);
+
+    // PTY attach endpoint: /pty/sessions/:id/attach
+    const ptyMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/attach$/);
+    if (ptyMatch) {
+      const sessionId = ptyMatch[1];
+
+      // Authenticate
+      let tenantId: string | undefined;
+      if (tenants) {
+        const apiKey = url.searchParams.get("key");
+        const tenant = authenticateWs(tenants, apiKey);
+        if (!tenant) {
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
+        }
+        tenantId = tenant.id;
+      }
+
+      ptyWss.handleUpgrade(request, socket, head, (ws) => {
+        handlePtyAttach(ws, sessionId, bridge, tenantId);
+      });
+      return;
+    }
+
     if (url.pathname !== "/ws") {
       socket.destroy();
       return;
@@ -681,4 +709,78 @@ function sendFrame(ws: WebSocket, frame: ServerFrame): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(frame));
   }
+}
+
+// --- PTY Attach ---
+
+/**
+ * Handle a PTY attach WebSocket connection. Relays raw terminal bytes between
+ * the client and the runner's PTY process.
+ *
+ * Protocol:
+ *   Client → Server: binary frames = raw keystrokes (base64)
+ *                     text frames = JSON commands (resize, etc.)
+ *   Server → Client: text frames = JSON {type:"pty_data", data:"<base64>"}
+ *                                  JSON {type:"pty_exit", exit_code, signal}
+ */
+function handlePtyAttach(
+  ws: WebSocket,
+  sessionId: string,
+  bridge: WsBridge,
+  tenantId?: string,
+): void {
+  logger.info("orchestrator.pty_attach", "client_connected", {
+    session_id: sessionId,
+    tenant_id: tenantId,
+  });
+
+  // Forward PTY data from runner → client
+  const unsubData = bridge.onPtyData(sessionId, (data, stderr) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "pty_data", data, stderr }));
+    }
+  });
+
+  const unsubExit = bridge.onPtyExit(sessionId, (exitCode, signal) => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "pty_exit", exit_code: exitCode, signal }));
+      ws.close();
+    }
+  });
+
+  // Client → runner: keystrokes and resize
+  ws.on("message", (data: Buffer, isBinary: boolean) => {
+    if (isBinary) {
+      // Raw keystrokes — forward as base64
+      bridge.sendPtyInput(sessionId, data.toString("base64"));
+    } else {
+      // Text message — parse as JSON command
+      try {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === "resize" && msg.cols && msg.rows) {
+          bridge.sendPtyResize(sessionId, msg.cols, msg.rows);
+        } else if (msg.type === "input" && msg.data) {
+          bridge.sendPtyInput(sessionId, msg.data);
+        }
+      } catch {
+        // Not JSON — treat as raw input
+        bridge.sendPtyInput(sessionId, data.toString("base64"));
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    logger.info("orchestrator.pty_attach", "client_disconnected", { session_id: sessionId });
+    unsubData();
+    unsubExit();
+  });
+
+  ws.on("error", (err) => {
+    logger.error("orchestrator.pty_attach", "client_error", {
+      session_id: sessionId,
+      error: err.message,
+    });
+    unsubData();
+    unsubExit();
+  });
 }

@@ -183,6 +183,28 @@ export class WsBridge extends EventEmitter {
             this.emit(`utility_query_result:${sessionId}:${(msg as any).request_id}`, msg);
             break;
 
+          case "pty_data":
+            this.emit(`pty_data:${sessionId}`, (msg as any).data, (msg as any).stderr);
+            break;
+
+          case "pty_exit":
+            logger.info("orchestrator.ws_bridge", "runner_pty_exit", {
+              session_id: sessionId,
+              exit_code: (msg as any).exit_code,
+              signal: (msg as any).signal,
+            });
+            this.emit(`pty_exit:${sessionId}`, (msg as any).exit_code, (msg as any).signal);
+            break;
+
+          case "background_complete":
+            logger.info("orchestrator.ws_bridge", "runner_background_complete", {
+              session_id: sessionId,
+              task_id: (msg as any).task_id,
+              success: (msg as any).success,
+            });
+            this.emit(`background_complete:${sessionId}`, msg);
+            break;
+
           default:
             logger.warn("orchestrator.ws_bridge", "unhandled_runner_message_type", {
               session_id: sessionId,
@@ -642,6 +664,40 @@ export class WsBridge extends EventEmitter {
       };
       this.on(eventKey, onResult);
     });
+  }
+
+  // --- PTY Relay ---
+
+  /** Subscribe to PTY data events from a runner session. Returns unsubscribe function. */
+  onPtyData(sessionId: string, cb: (data: string, stderr?: boolean) => void): () => void {
+    const eventKey = `pty_data:${sessionId}`;
+    const listener = (data: string, stderr?: boolean) => cb(data, stderr);
+    this.on(eventKey, listener);
+    return () => this.off(eventKey, listener);
+  }
+
+  /** Subscribe to PTY exit events. Returns unsubscribe function. */
+  onPtyExit(sessionId: string, cb: (exitCode: number | null, signal: string | null) => void): () => void {
+    const eventKey = `pty_exit:${sessionId}`;
+    const listener = (code: number | null, signal: string | null) => cb(code, signal);
+    this.on(eventKey, listener);
+    return () => this.off(eventKey, listener);
+  }
+
+  /** Send PTY input (keystrokes or resize) to a runner session. */
+  sendPtyInput(sessionId: string, data: string): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify({ type: "pty_input", data }));
+    return true;
+  }
+
+  /** Send PTY resize to a runner session. */
+  sendPtyResize(sessionId: string, cols: number, rows: number): boolean {
+    const ws = this.connections.get(sessionId);
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    ws.send(JSON.stringify({ type: "pty_input", type_: "pty_resize", cols, rows }));
+    return true;
   }
 
   /** Attach a database reference for persisting snapshots. */

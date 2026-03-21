@@ -418,6 +418,22 @@ export interface RunnerBackgroundCompleteMessage {
   error?: string;
 }
 
+/** PTY data from the runner (base64-encoded terminal bytes) */
+export interface RunnerPtyDataMessage {
+  type: "pty_data";
+  session_id: string;
+  data: string;
+  stderr?: boolean;
+}
+
+/** PTY process exit notification */
+export interface RunnerPtyExitMessage {
+  type: "pty_exit";
+  session_id: string;
+  exit_code: number | null;
+  signal?: string | null;
+}
+
 export type RunnerMessage =
   | StatusFrame
   | EventFrame
@@ -430,7 +446,9 @@ export type RunnerMessage =
   | RunnerUtilityQueryResultMessage
   | CommandsResultFrame
   | McpResultFrame
-  | RunnerBackgroundCompleteMessage;
+  | RunnerBackgroundCompleteMessage
+  | RunnerPtyDataMessage
+  | RunnerPtyExitMessage;
 
 /** Orchestrator -> Runner: send a message to the agent */
 export interface OrchestratorMessageCommand extends WsCorrelation {
