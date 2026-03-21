@@ -31,12 +31,12 @@ kubectl apply -f k8s/namespace.yaml
 
 # Real OAuth token (required)
 kubectl create secret generic claude-tokens \
-  -n claude-runner \
+  -n production \
   --from-literal=CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
 
 # Obsidian vault credentials are managed via the auth store (portal UI), not k8s secrets.
 
-kubectl create secret generic git-tokens -n claude-runner \
+kubectl create secret generic git-tokens -n production \
   --from-literal=GIT_TOKEN="" \
   --from-literal=GITHUB_TOKEN=""
 ```
@@ -62,17 +62,17 @@ cat k8s/orchestrator-deployment.yaml | \
   kubectl apply -f -
 
 # Set image pull policy for runner pods
-kubectl -n claude-runner set env deployment/claude-orchestrator RUNNER_IMAGE_PULL_POLICY=Never
+kubectl -n production set env deployment/claude-orchestrator RUNNER_IMAGE_PULL_POLICY=Never
 
 # Wait for ready
-kubectl -n claude-runner rollout status deployment/claude-orchestrator --timeout=60s
+kubectl -n production rollout status deployment/claude-orchestrator --timeout=60s
 ```
 
 ## 6. Test it
 
 ```bash
 # Port-forward
-kubectl -n claude-runner port-forward svc/claude-orchestrator 9080:8080 &
+kubectl -n production port-forward svc/claude-orchestrator 9080:8080 &
 
 # Health check
 curl localhost:9080/health
@@ -83,7 +83,7 @@ curl -X POST localhost:9080/sessions \
   -d '{"message": "say hello"}'
 
 # Check pods
-kubectl -n claude-runner get pods
+kubectl -n production get pods
 
 # Check metrics
 curl localhost:9080/metrics | grep sessions_created
@@ -95,10 +95,10 @@ curl localhost:9080/metrics | grep sessions_created
 kubectl apply -k k8s/monitoring/
 
 # Wait for pods
-kubectl -n monitoring get pods -w
+kubectl -n infra get pods -w
 
 # Port-forward Grafana
-kubectl -n monitoring port-forward svc/grafana 3000:3000 &
+kubectl -n infra port-forward svc/grafana 3000:3000 &
 
 # Open http://localhost:3000 (admin/admin)
 # Datasources pre-configured: VictoriaMetrics + VictoriaLogs
@@ -108,20 +108,20 @@ kubectl -n monitoring port-forward svc/grafana 3000:3000 &
 
 ```bash
 # Orchestrator logs
-kubectl -n claude-runner logs deploy/claude-orchestrator -f
+kubectl -n production logs deploy/claude-orchestrator -f
 
 # Runner pod logs
-kubectl -n claude-runner logs <pod-name> -f
+kubectl -n production logs <pod-name> -f
 
 # All pods
-kubectl -n claude-runner get pods
-kubectl -n monitoring get pods
+kubectl -n production get pods
+kubectl -n infra get pods
 
 # Events (scheduling failures, image pulls)
-kubectl -n claude-runner get events --sort-by=.lastTimestamp
+kubectl -n production get events --sort-by=.lastTimestamp
 
 # Query VictoriaMetrics
-kubectl -n monitoring port-forward svc/victoria-metrics 8428:8428 &
+kubectl -n infra port-forward svc/victoria-metrics 8428:8428 &
 curl 'localhost:8428/api/v1/query?query=sessions_created_total'
 
 # Cleanup
@@ -133,7 +133,7 @@ k3d cluster delete claude-runner
 Enable multi-tenancy by setting env vars on the orchestrator:
 
 ```bash
-kubectl -n claude-runner set env deployment/claude-orchestrator \
+kubectl -n production set env deployment/claude-orchestrator \
   ENABLE_TENANTS=true \
   ADMIN_API_KEY=your-admin-secret-here
 

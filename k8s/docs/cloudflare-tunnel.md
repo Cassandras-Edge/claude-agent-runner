@@ -78,7 +78,7 @@ In the Cloudflare dashboard, go to your tunnel → Overview → copy the **tunne
 
 ```bash
 kubectl create secret generic cloudflare-tunnel \
-  -n claude-runner \
+  -n infra \
   --from-literal=token="YOUR_TUNNEL_TOKEN_HERE"
 ```
 
@@ -115,7 +115,7 @@ kubectl apply -f k8s/orchestrator-deployment.yaml
 
 ```bash
 # Check the pod has both containers running
-kubectl -n claude-runner get pods
+kubectl -n production get pods
 # Should show 2/2 Ready
 
 # Test the external endpoint
@@ -139,8 +139,8 @@ This adds authentication at the Cloudflare edge before traffic reaches your clus
 ## Troubleshooting
 
 **cloudflared container keeps restarting:**
-- Check the secret exists: `kubectl get secret cloudflare-tunnel -n claude-runner`
-- Check logs: `kubectl logs <pod> -c cloudflared -n claude-runner`
+- Check the secret exists: `kubectl get secret cloudflare-tunnel -n production`
+- Check logs: `kubectl logs <pod> -c cloudflared -n production`
 - Common issue: wrong tunnel token (copy the full token, not the tunnel ID)
 
 **WebSocket connections fail:**
@@ -148,7 +148,7 @@ This adds authentication at the Cloudflare edge before traffic reaches your clus
 - Check that the WS hostname points to port 8081, not 8080
 
 **Tunnel shows "inactive" in dashboard:**
-- The pod might not be running yet. Check: `kubectl get pods -n claude-runner`
+- The pod might not be running yet. Check: `kubectl get pods -n production`
 - The tunnel token might be for a different tunnel
 
 ## Updating cloudflared
@@ -157,5 +157,5 @@ To update the cloudflared image version, edit the `image:` tag in the deployment
 
 ```bash
 # Check latest version at https://github.com/cloudflare/cloudflared/releases
-kubectl -n claude-runner set image deployment/claude-orchestrator cloudflared=cloudflare/cloudflared:NEW_VERSION
+kubectl -n production set image deployment/claude-orchestrator cloudflared=cloudflare/cloudflared:NEW_VERSION
 ```

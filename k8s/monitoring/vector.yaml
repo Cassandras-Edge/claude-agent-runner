@@ -30,7 +30,7 @@ data:
       victoria_logs:
         type: http
         inputs: [parse_json]
-        uri: "http://victoria-logs.monitoring.svc:9428/insert/jsonline?_stream_fields=_namespace,_pod,_container&_msg_field=message&_time_field=ts"
+        uri: "http://victoria-logs.infra.svc:9428/insert/jsonline?_stream_fields=_namespace,_pod,_container&_msg_field=message&_time_field=ts"
         encoding:
           codec: json
         batch:

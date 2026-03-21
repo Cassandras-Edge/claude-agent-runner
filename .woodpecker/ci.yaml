@@ -23,7 +23,7 @@ steps:
     commands:
       - >
         buildctl
-        --addr tcp://buildkitd.buildkitd.svc.cluster.local:1234
+        --addr tcp://buildkitd.infra.svc.cluster.local:1234
         build
         --frontend dockerfile.v0
         --local context=.
@@ -40,7 +40,7 @@ steps:
     commands:
       - >
         buildctl
-        --addr tcp://buildkitd.buildkitd.svc.cluster.local:1234
+        --addr tcp://buildkitd.infra.svc.cluster.local:1234
         build
         --frontend dockerfile.v0
         --local context=.
