@@ -78,6 +78,7 @@ logger.info("orchestrator.config", "oauth token pool initialized", {
 const runnerEnv: Record<string, string> = {};
 if (process.env.GIT_TOKEN) runnerEnv.GIT_TOKEN = process.env.GIT_TOKEN;
 if (process.env.GITHUB_TOKEN) runnerEnv.GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+if (process.env.CLAUDE_PTY_MODE) runnerEnv.CLAUDE_PTY_MODE = process.env.CLAUDE_PTY_MODE;
 
 // ACL client for fetching per-tenant credentials (Obsidian auth tokens, etc.)
 const AUTH_URL = process.env.AUTH_URL;
