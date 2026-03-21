@@ -2,20 +2,28 @@
   "id": "sdk-ipc",
   "description": "Unix socket for SDK NDJSON protocol — works in both interactive and print modes",
   "target": "js-only",
-  "tested_versions": ["2.1.81", "2.1.77"],
+  "tested_versions": ["2.1.81"],
   "steps": [
     {
       "type": "extract",
-      "id": "session_fn",
-      "scope": "region",
+      "id": "audit_fn",
+      "scope": "global",
       "anchor": "queue-operation",
-      "pattern": "let \\w+=(\\w+)\\(\\),\\w+=\\{type:\"queue-operation\"",
+      "pattern": "function ([\\w$]+)\\([\\w$]+,[\\w$]+\\)\\{let [\\w$]+=[\\w$]+\\(\\),[\\w$]+=\\{type:\"queue-operation\"",
+      "store_as": "AUDIT_FN"
+    },
+    {
+      "type": "extract",
+      "id": "session_fn",
+      "scope": "global",
+      "anchor": "queue-operation",
+      "pattern": "let [\\w$]+=([\\w$]+)\\(\\),[\\w$]+=\\{type:\"queue-operation\"",
       "store_as": "SESSION_FN"
     },
     {
       "type": "insert_after",
       "id": "inject_sdk_ipc",
-      "marker": "C$_(\"enqueue\",typeof _.value===\"string\"?_.value:void 0)}",
+      "marker": "{{AUDIT_FN}}(\"enqueue\",typeof _.value===\"string\"?_.value:void 0)}",
       "code_file": "patch-code.js.tmpl"
     }
   ]
