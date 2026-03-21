@@ -45,4 +45,5 @@ steps:
         --frontend dockerfile.v0
         --local context=.
         --local dockerfile=packages/runner
+        --no-cache-filter=patcher
         --output type=image,name=172.20.0.161:30500/claude-agent-runner/runner:latest,push=true,registry.insecure=true
