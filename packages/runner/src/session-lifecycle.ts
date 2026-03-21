@@ -94,7 +94,16 @@ export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSe
   return opts;
 }
 
-export async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession> {
+export async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession | import("./sdk-ipc-session.js").SdkIpcSession> {
+  // PTY mode: spawn Claude Code with a real PTY + connect via sdk-ipc socket
+  if (process.env.CLAUDE_PTY_MODE === "true") {
+    const { spawnWithPty } = await import("./pty-spawn.js");
+    const handle = await spawnWithPty();
+    state.ptyMode = true;
+    state.rcSessionUrl = handle.rcSessionUrl;
+    return handle.session;
+  }
+
   const opts = buildSessionOptions(false, ws);
   let session: SDKSession;
 

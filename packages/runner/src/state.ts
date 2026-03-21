@@ -1,6 +1,8 @@
 import type { SDKSession } from "@anthropic-ai/claude-agent-sdk";
+import type { ChildProcess } from "child_process";
 import type { DrainResult } from "./background-drainer.js";
 import type { MemIpcClient } from "./mem-ipc.js";
+import type { SdkIpcSession } from "./sdk-ipc-session.js";
 
 export type BackgroundSession = {
   sdkSessionId: string;
@@ -31,8 +33,14 @@ export const state = {
   MEM_SOCKET_PATH: "/tmp/claude-mem.sock",
 
   sdkSessionId: undefined as string | undefined,
-  session: null as SDKSession | null,
+  session: null as SDKSession | SdkIpcSession | null,
   ipc: null as MemIpcClient | null,
+
+  // PTY mode (inverted architecture)
+  ptyMode: false,
+  ptyProcess: null as ChildProcess | null,
+  ptySocketPath: undefined as string | undefined,
+  rcSessionUrl: undefined as string | undefined,
   setupCompleted: false,
   isBusy: false,
   forceCompactOnNextQuery: false,

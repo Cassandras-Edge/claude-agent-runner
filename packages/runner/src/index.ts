@@ -5,6 +5,7 @@ import { ORCHESTRATOR_URL, initConfig } from "./config.js";
 import { handleMessage, preloadWarmSession } from "./command-handler.js";
 import { logger } from "./logger.js";
 import { cloneRepo, prepareVault } from "./source-prep.js";
+import { attachPtyRelay, handlePtyInput } from "./pty-relay.js";
 import { state } from "./state.js";
 
 initConfig();
@@ -34,7 +35,20 @@ function connect(): void {
       }
 
       await preloadWarmSession(ws);
-      ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "ready" }));
+
+      // Attach PTY relay if running in PTY mode
+      if (state.ptyMode && state.ptyProcess) {
+        attachPtyRelay(ws);
+        ws.send(JSON.stringify({
+          type: "status",
+          session_id: state.SESSION_ID,
+          status: "ready",
+          pty_mode: true,
+          rc_session_url: state.rcSessionUrl,
+        }));
+      } else {
+        ws.send(JSON.stringify({ type: "status", session_id: state.SESSION_ID, status: "ready" }));
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       logger.error("runner.ws", "setup_failed", { session_id: state.SESSION_ID, error: message });
@@ -50,6 +64,12 @@ function connect(): void {
       msg = JSON.parse(data.toString());
     } catch {
       logger.warn("runner.ws", "invalid_json_from_orchestrator", { session_id: state.SESSION_ID });
+      return;
+    }
+
+    // Route PTY input messages directly to the PTY relay
+    if ((msg as any).type === "pty_input" && state.ptyMode) {
+      handlePtyInput(msg as any);
       return;
     }
 
