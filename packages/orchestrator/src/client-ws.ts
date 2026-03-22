@@ -22,7 +22,7 @@ import type {
   SubscribeFrame,
   UnsubscribeFrame,
 } from "@bugcat/claude-agent-runner-shared";
-import type { TenantManager } from "./tenants.js";
+import type { AuthClient } from "./auth-client.js";
 import { authenticateWs } from "./auth.js";
 import { logger, runWithLogContext } from "./logger.js";
 import * as metrics from "./metrics.js";
@@ -30,12 +30,12 @@ import * as metrics from "./metrics.js";
 interface AttachOptions {
   bridge: WsBridge;
   sessions: SessionManager;
-  tenants?: TenantManager;
+  authClient: AuthClient;
 }
 
 export function attachClientWs(
   httpServer: { on(event: "upgrade", listener: (req: IncomingMessage, socket: Duplex, head: Buffer) => void): any },
-  { bridge, sessions, tenants }: AttachOptions,
+  { bridge, sessions, authClient }: AttachOptions,
 ): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
 
@@ -49,22 +49,21 @@ export function attachClientWs(
     const ptyMatch = url.pathname.match(/^\/pty\/sessions\/([^/]+)\/attach$/);
     if (ptyMatch) {
       const sessionId = ptyMatch[1];
+      const apiKey = url.searchParams.get("key");
 
-      // Authenticate
-      let tenantId: string | undefined;
-      if (tenants) {
-        const apiKey = url.searchParams.get("key");
-        const tenant = authenticateWs(tenants, apiKey);
+      authenticateWs(authClient, apiKey).then((tenant) => {
         if (!tenant) {
           socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
           socket.destroy();
           return;
         }
-        tenantId = tenant.id;
-      }
 
-      ptyWss.handleUpgrade(request, socket, head, (ws) => {
-        handlePtyAttach(ws, sessionId, bridge, tenantId);
+        ptyWss.handleUpgrade(request, socket, head, (ws) => {
+          handlePtyAttach(ws, sessionId, bridge, tenant.id);
+        });
+      }).catch(() => {
+        socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+        socket.destroy();
       });
       return;
     }
@@ -74,22 +73,22 @@ export function attachClientWs(
       return;
     }
 
-    // Authenticate via query param when tenants are enabled
-    let tenantId: string | undefined;
-    if (tenants) {
-      const apiKey = url.searchParams.get("key");
-      const tenant = authenticateWs(tenants, apiKey);
+    // Authenticate via query param
+    const apiKey = url.searchParams.get("key");
+    authenticateWs(authClient, apiKey).then((tenant) => {
       if (!tenant) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
-      tenantId = tenant.id;
-    }
 
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      (ws as any)._tenantId = tenantId;
-      wss.emit("connection", ws, request);
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        (ws as any)._tenantId = tenant.id;
+        wss.emit("connection", ws, request);
+      });
+    }).catch(() => {
+      socket.write("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+      socket.destroy();
     });
   });
 
@@ -757,7 +756,8 @@ function handlePtyAttach(
       // Text message — parse as JSON command
       try {
         const msg = JSON.parse(data.toString());
-        if (msg.type === "resize" && msg.cols && msg.rows) {
+        if (msg.type === "resize" && msg.cols != null && msg.rows != null) {
+          logger.info("orchestrator.pty_attach", "resize_received", { session_id: sessionId, cols: msg.cols, rows: msg.rows });
           bridge.sendPtyResize(sessionId, msg.cols, msg.rows);
         } else if (msg.type === "input" && msg.data) {
           bridge.sendPtyInput(sessionId, msg.data);

@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync, readdirSync, copyFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, copyFileSync } from "fs";
 import { join } from "path";
 import * as pty from "node-pty";
 import { SdkIpcSession } from "./sdk-ipc-session.js";
@@ -90,47 +90,55 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   return { pty: ptyProcess, session, socketPath: sdkSocketPath };
 }
 
-/** Pre-create .claude.json to skip onboarding wizard. */
+/** Pre-create or patch .claude.json to skip onboarding + trust dialogs. */
 function prepareClaudeConfig(home: string): void {
   const claudeJsonPath = join(home, ".claude.json");
-  if (existsSync(claudeJsonPath)) return;
-
-  // Try restore from backup
-  const backupDir = join(home, ".claude", "backups");
-  try {
-    if (existsSync(backupDir)) {
-      const backups = readdirSync(backupDir)
-        .filter(f => f.startsWith(".claude.json.backup."))
-        .sort()
-        .reverse();
-      if (backups.length > 0) {
-        copyFileSync(join(backupDir, backups[0]), claudeJsonPath);
-        // Ensure trust is set in restored config
-        try {
-          const restored = JSON.parse(require("fs").readFileSync(claudeJsonPath, "utf8"));
-          const wp = state.WORKSPACE || "/workspace";
-          restored.hasCompletedOnboarding = true;
-          restored.projects = restored.projects || {};
-          restored.projects[wp] = restored.projects[wp] || {};
-          restored.projects[wp].hasTrustDialogAccepted = true;
-          writeFileSync(claudeJsonPath, JSON.stringify(restored));
-        } catch {}
-        logger.info("runner.pty", "claude_json_restored", { backup: backups[0] });
-        return;
-      }
-    }
-  } catch {}
-
   const workspacePath = state.WORKSPACE || "/workspace";
-  writeFileSync(claudeJsonPath, JSON.stringify({
-    theme: "dark",
-    hasCompletedOnboarding: true,
-    hasSeenOnboardingTip: true,
-    projects: {
-      [workspacePath]: { hasTrustDialogAccepted: true },
-    },
-  }));
-  logger.info("runner.pty", "claude_json_created");
+
+  let config: Record<string, any> = {};
+
+  // Load existing config if present
+  if (existsSync(claudeJsonPath)) {
+    try {
+      config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+    } catch {
+      config = {};
+    }
+  } else {
+    // Try restore from backup
+    const backupDir = join(home, ".claude", "backups");
+    try {
+      if (existsSync(backupDir)) {
+        const backups = readdirSync(backupDir)
+          .filter(f => f.startsWith(".claude.json.backup."))
+          .sort()
+          .reverse();
+        if (backups.length > 0) {
+          copyFileSync(join(backupDir, backups[0]), claudeJsonPath);
+          try {
+            config = JSON.parse(readFileSync(claudeJsonPath, "utf8"));
+          } catch {
+            config = {};
+          }
+          logger.info("runner.pty", "claude_json_restored", { backup: backups[0] });
+        }
+      }
+    } catch {}
+  }
+
+  // Always ensure onboarding + trust fields are set
+  config.theme = config.theme || "dark";
+  config.hasCompletedOnboarding = true;
+  config.hasSeenOnboardingTip = true;
+  config.projects = config.projects || {};
+  config.projects[workspacePath] = config.projects[workspacePath] || {};
+  config.projects[workspacePath].hasTrustDialogAccepted = true;
+
+  writeFileSync(claudeJsonPath, JSON.stringify(config));
+  logger.info("runner.pty", "claude_json_ensured", {
+    workspace: workspacePath,
+    had_existing: existsSync(claudeJsonPath),
+  });
 }
 
 /** Pre-write workspace trust settings. */

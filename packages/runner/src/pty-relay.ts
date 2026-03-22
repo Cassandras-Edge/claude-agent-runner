@@ -48,9 +48,9 @@ export function handlePtyInput(msg: { data?: string; type?: string; cols?: numbe
   if (!ptyHandle) return;
 
   // Resize — node-pty handles this natively
-  if (msg.type === "pty_resize" && msg.cols && msg.rows) {
+  if (msg.type === "pty_resize" && msg.cols != null && msg.rows != null) {
     ptyHandle.resize(msg.cols, msg.rows);
-    logger.debug("runner.pty-relay", "resize", { cols: msg.cols, rows: msg.rows });
+    logger.info("runner.pty-relay", "resize", { cols: msg.cols, rows: msg.rows });
     return;
   }
 

@@ -695,8 +695,12 @@ export class WsBridge extends EventEmitter {
   /** Send PTY resize to a runner session. */
   sendPtyResize(sessionId: string, cols: number, rows: number): boolean {
     const ws = this.connections.get(sessionId);
-    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      logger.warn("orchestrator.ws_bridge", "pty_resize_no_runner", { session_id: sessionId, cols, rows });
+      return false;
+    }
     ws.send(JSON.stringify({ type: "pty_resize", cols, rows }));
+    logger.info("orchestrator.ws_bridge", "pty_resize_sent", { session_id: sessionId, cols, rows });
     return true;
   }
 
