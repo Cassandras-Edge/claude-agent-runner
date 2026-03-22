@@ -23,17 +23,8 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   const memSocketPath = state.MEM_SOCKET_PATH;
 
   const baseEnv = buildClaudeChildEnv();
-  const skipPoolToken = !baseEnv.CLAUDE_CODE_OAUTH_TOKEN;
-
-  // Build child env from process.env, filtering out pool token in login mode
-  const parentEnv = { ...process.env } as Record<string, string>;
-  if (skipPoolToken) {
-    delete parentEnv.CLAUDE_CODE_OAUTH_TOKEN;
-    logger.info("runner.pty", "stripping_pool_token", { session_id: state.SESSION_ID });
-  }
-
   const childEnv: Record<string, string> = {
-    ...parentEnv,
+    ...process.env as Record<string, string>,
     ...baseEnv,
     TERM: "xterm-256color",
     CLAUDE_SDK_IPC_SOCKET: sdkSocketPath,

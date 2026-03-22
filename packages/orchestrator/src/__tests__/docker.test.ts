@@ -66,17 +66,7 @@ describe("DockerManager", () => {
       expect(containerId).toBe("abc123def456");
     });
 
-    it("throws when CLAUDE_CODE_OAUTH_TOKEN is missing from env", async () => {
-      await expect(
-        manager.spawn({ ...baseConfig, env: {} })
-      ).rejects.toThrow("CLAUDE_CODE_OAUTH_TOKEN missing");
-    });
 
-    it("throws when CLAUDE_CODE_OAUTH_TOKEN is empty", async () => {
-      await expect(
-        manager.spawn({ ...baseConfig, env: { CLAUDE_CODE_OAUTH_TOKEN: "" } })
-      ).rejects.toThrow("CLAUDE_CODE_OAUTH_TOKEN missing");
-    });
 
     it("stores the container ID for later retrieval", async () => {
       await manager.spawn(baseConfig);

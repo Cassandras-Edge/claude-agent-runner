@@ -57,9 +57,6 @@ export class K8sManager implements ContainerManager {
       ([key, value]) => FORWARDED_RUNNER_ENV_KEYS.has(key) && value !== undefined && value !== "",
     );
     const forwardedEnv = Object.fromEntries(forwardedEnvEntries) as Record<string, string>;
-    if (!forwardedEnv.CLAUDE_CODE_OAUTH_TOKEN) {
-      throw new Error("CLAUDE_CODE_OAUTH_TOKEN missing from runner environment");
-    }
 
     // Use tenant namespace if provided, otherwise default
     const targetNamespace = config.namespace || this.namespace;

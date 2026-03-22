@@ -11,8 +11,8 @@ export function registerHealthRoutes(app: Hono, ctx: AppContext): void {
       status: "ok",
       active_sessions: ctx.sessions.activeCount(),
       token_pool: {
-        size: ctx.tokenPool.size,
-        usage: ctx.tokenPool.usage(),
+        size: ctx.tokenPool?.size ?? 0,
+        usage: ctx.tokenPool?.usage() ?? {},
       },
       uptime_ms: Date.now() - ctx.startedAt.getTime(),
       runner_image: ctx.runnerImage,

@@ -59,16 +59,18 @@ const warmPoolTotalTarget = warmPoolProfiles.reduce((sum, p) => sum + p.targetSi
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
 const ENABLE_TENANTS = process.env.ENABLE_TENANTS === "true";
 
-// --- Token pool ---
+// --- Token pool (optional in PTY-only mode) ---
 const oauthTokens = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-if (!oauthTokens) {
-  logger.error("orchestrator.config", "CLAUDE_CODE_OAUTH_TOKEN is required");
+const tokenPool = oauthTokens ? new TokenPool(oauthTokens) : null;
+
+if (warmPoolTotalTarget > 0 && !tokenPool) {
+  logger.error("orchestrator.config", "warm pool requires CLAUDE_CODE_OAUTH_TOKEN");
   process.exit(1);
 }
-const tokenPool = new TokenPool(oauthTokens);
 
-logger.info("orchestrator.config", "oauth token pool initialized", {
-  token_count: tokenPool.size,
+logger.info("orchestrator.config", "token pool initialized", {
+  token_count: tokenPool?.size ?? 0,
+  pty_only_mode: !tokenPool,
   requested_host: ORCHESTRATOR_HOST,
   ws_port: WS_PORT,
   host_port: PORT,
@@ -129,7 +131,7 @@ if (warmPoolProfiles.length > 0) {
     profiles: warmPoolProfiles,
     docker,
     bridge,
-    tokenPool,
+    tokenPool: tokenPool!,
     runnerImage: RUNNER_IMAGE,
     orchestratorWsUrl: ORCHESTRATOR_WS_URL,
     network: NETWORK,
@@ -178,11 +180,13 @@ for (const sessionId of recovered.running) {
 }
 
 // Restore token pool state from reconciled persisted sessions.
-tokenPool.restore(sessions.activeTokenIndices(), sessions.maxTokenIndex());
-logger.info("orchestrator.bootstrap", "token pool state restored", {
-  active_sessions: sessions.activeTokenIndices().length,
-  max_token_index: sessions.maxTokenIndex(),
-});
+if (tokenPool) {
+  tokenPool.restore(sessions.activeTokenIndices(), sessions.maxTokenIndex());
+  logger.info("orchestrator.bootstrap", "token pool state restored", {
+    active_sessions: sessions.activeTokenIndices().length,
+    max_token_index: sessions.maxTokenIndex(),
+  });
+}
 
 // Ensure Docker network exists
 await docker.ensureNetwork(NETWORK);
@@ -263,7 +267,7 @@ const httpServer = serve({ fetch: app.fetch, port: PORT }, (info) => {
     idle_timeout_seconds: IDLE_TIMEOUT_MS / 1000,
     message_timeout_seconds: MESSAGE_TIMEOUT_MS / 1000,
     max_active_sessions: MAX_ACTIVE_SESSIONS ?? "unlimited",
-    token_pool_size: tokenPool.size,
+    token_pool_size: tokenPool?.size ?? 0,
     db_path: DB_PATH,
     sessions_volume: SESSIONS_VOLUME,
     recovered_running: recovered.running.length,

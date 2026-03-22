@@ -145,12 +145,13 @@ export async function spawnSession(
     });
   }
 
-  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length;
+  const isPty = ctx.env.CLAUDE_PTY_MODE === "true";
+  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length && !isPty;
   if (canUseWarmPool) {
     const warmEntry = ctx.warmPool!.adopt(body.vault, body.agentId);
     if (warmEntry) {
-      ctx.tokenPool.release(warmEntry.warmId);
-      const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
+      ctx.tokenPool!.release(warmEntry.warmId);
+      const { token, tokenIndex } = ctx.tokenPool!.assign(sessionId);
       const warmCredentials = await resolveCredentials(ctx, tenantId, body.vault);
 
       const adoptConfig = {
@@ -209,9 +210,15 @@ export async function spawnSession(
     }
   }
 
-  const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
+  let tokenIndex = -1;
+  let sessionEnv = { ...ctx.env };
+  if (!isPty) {
+    if (!ctx.tokenPool) throw new Error("Token pool required for headless session");
+    const assigned = ctx.tokenPool.assign(sessionId);
+    tokenIndex = assigned.tokenIndex;
+    sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: assigned.token };
+  }
   const credentialsEnv = await resolveCredentials(ctx, tenantId, body.vault);
-  const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
   let containerId: string | undefined;
 
   try {
@@ -275,7 +282,7 @@ export async function spawnSession(
     if (containerId) {
       await ctx.docker.kill(sessionId).catch(() => undefined);
     }
-    ctx.tokenPool.release(sessionId);
+    ctx.tokenPool?.release(sessionId);
     throw err;
   }
 }
@@ -417,7 +424,7 @@ export async function rollbackSession(ctx: AppContext, sessionId: string, reques
   ctx.bridge.sendShutdown(sessionId);
   await ctx.docker.kill(sessionId).catch(() => undefined);
   ctx.sessions.remove(sessionId);
-  ctx.tokenPool.release(sessionId);
+  ctx.tokenPool?.release(sessionId);
 }
 
 export async function stopSessionRuntime(ctx: AppContext, sessionId: string): Promise<void> {
@@ -425,7 +432,7 @@ export async function stopSessionRuntime(ctx: AppContext, sessionId: string): Pr
   await ctx.docker.kill(sessionId).catch(() => undefined);
   ctx.sessions.clearRuntime(sessionId);
   ctx.sessions.updateStatus(sessionId, "stopped");
-  ctx.tokenPool.release(sessionId);
+  ctx.tokenPool?.release(sessionId);
 }
 
 export async function getTranscriptResponse(ctx: AppContext, sessionId: string, format?: string) {

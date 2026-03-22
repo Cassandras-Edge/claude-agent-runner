@@ -61,11 +61,7 @@ describe("K8sManager", () => {
       expect(podName).toBe("runner-session-1");
     });
 
-    it("throws when CLAUDE_CODE_OAUTH_TOKEN is missing", async () => {
-      await expect(
-        manager.spawn({ ...baseConfig, env: {} }),
-      ).rejects.toThrow("CLAUDE_CODE_OAUTH_TOKEN missing");
-    });
+
 
     it("stores the pod name for later retrieval", async () => {
       await manager.spawn(baseConfig);

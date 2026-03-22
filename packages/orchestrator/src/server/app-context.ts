@@ -11,7 +11,7 @@ export interface AppContext {
   sessions: SessionManager;
   docker: ContainerManager;
   bridge: WsBridge;
-  tokenPool: TokenPool;
+  tokenPool: TokenPool | null;
   db: Database.Database;
   env: Record<string, string>;
   runnerImage: string;

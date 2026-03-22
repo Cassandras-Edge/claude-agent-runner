@@ -82,9 +82,6 @@ export class DockerManager implements ContainerManager {
       ([key, value]) => FORWARDED_RUNNER_ENV_KEYS.has(key) && value !== undefined && value !== "",
     );
     const forwardedEnv = Object.fromEntries(forwardedEnvEntries) as Record<string, string>;
-    if (!forwardedEnv.CLAUDE_CODE_OAUTH_TOKEN) {
-      throw new Error("CLAUDE_CODE_OAUTH_TOKEN missing from runner environment");
-    }
 
     logger.info("orchestrator.docker", "starting_container", {
       session_id: config.sessionId,

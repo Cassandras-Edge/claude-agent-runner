@@ -155,7 +155,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       ctx.sessions.updateStatus(session.id, "stopped");
     } else {
       ctx.sessions.clearRuntime(session.id);
-      ctx.tokenPool.release(session.id);
+      ctx.tokenPool?.release(session.id);
     }
 
     const refreshed = ctx.sessions.get(session.id) ?? session;
@@ -192,9 +192,10 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
     });
 
     ctx.sessions.clearRuntime(session.id);
-    ctx.tokenPool.release(session.id);
+    ctx.tokenPool?.release(session.id);
     await ctx.docker.kill(session.id).catch(() => undefined);
 
+    if (!ctx.tokenPool) throw new Error("Token pool required for session restart");
     const { token, tokenIndex } = ctx.tokenPool.assign(session.id);
     const credentialsEnv = await resolveCredentials(ctx, session.tenantId, session.vaultName);
     const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };
@@ -237,7 +238,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       ctx.bridge.sendShutdown(session.id);
       await ctx.docker.kill(session.id).catch(() => undefined);
       ctx.sessions.clearRuntime(session.id);
-      ctx.tokenPool.release(session.id);
+      ctx.tokenPool?.release(session.id);
       ctx.sessions.setError(session.id, message);
       return c.json({ code: categorizeError(message) as any, message, session_id: session.id }, 500 as any);
     }
@@ -279,6 +280,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       });
       await ensureCapacity(ctx);
 
+      if (!ctx.tokenPool) throw new Error("Token pool required for fork");
       const { token, tokenIndex } = ctx.tokenPool.assign(sessionId);
       const credentialsEnv = await resolveCredentials(ctx, parent.tenantId, parent.vaultName);
       const sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: token };

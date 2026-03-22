@@ -49,7 +49,7 @@ export function registerUtilityRoutes(app: Hono, ctx: AppContext): void {
 
       if (!sent) {
         if (ephemeral) {
-          ctx.tokenPool.release(ephemeral.warmId);
+          ctx.tokenPool?.release(ephemeral.warmId);
           await ctx.docker.kill(ephemeral.warmId).catch(() => {});
           const fallbackSent = ctx.bridge.sendUtilityQuery(
             session.id,
@@ -72,7 +72,7 @@ export function registerUtilityRoutes(app: Hono, ctx: AppContext): void {
       const result = await ctx.bridge.waitForUtilityQueryResult(runnerId, requestId);
 
       if (ephemeral) {
-        ctx.tokenPool.release(ephemeral.warmId);
+        ctx.tokenPool?.release(ephemeral.warmId);
         ctx.docker.kill(ephemeral.warmId).catch(() => {});
       }
 
@@ -130,7 +130,7 @@ export function registerUtilityRoutes(app: Hono, ctx: AppContext): void {
 
       if (!sent) {
         if (ephemeral) {
-          ctx.tokenPool.release(ephemeral.warmId);
+          ctx.tokenPool?.release(ephemeral.warmId);
           await ctx.docker.kill(ephemeral.warmId).catch(() => {});
           const fallbackSent = ctx.bridge.sendUtilityQuery(
             session.id,
@@ -152,7 +152,7 @@ export function registerUtilityRoutes(app: Hono, ctx: AppContext): void {
       const result = await ctx.bridge.waitForUtilityQueryResult(runnerId, requestId);
 
       if (ephemeral) {
-        ctx.tokenPool.release(ephemeral.warmId);
+        ctx.tokenPool?.release(ephemeral.warmId);
         ctx.docker.kill(ephemeral.warmId).catch(() => {});
       }
 
