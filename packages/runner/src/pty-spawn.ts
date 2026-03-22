@@ -90,17 +90,34 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     });
   }
 
+  // Run a quick --print to accept workspace trust before launching interactive mode.
+  // --print skips the trust dialog and creates the trust state on disk.
   const executable = PATCHED_CLI_PATH ? "bun" : "claude";
+  const initArgs = PATCHED_CLI_PATH
+    ? [PATCHED_CLI_PATH, "--print", ".", "--dangerously-skip-permissions"]
+    : ["--print", ".", "--dangerously-skip-permissions"];
+  try {
+    const { execFileSync } = require("child_process");
+    execFileSync(executable, initArgs, {
+      env: childEnv,
+      cwd: state.WORKSPACE || process.cwd(),
+      stdio: "pipe",
+      timeout: 60000,
+    });
+    logger.info("runner.pty", "trust_init_complete");
+  } catch (err) {
+    logger.warn("runner.pty", "trust_init_failed", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   let spawnCmd: string;
   let spawnArgs: string[];
 
   if (hasScript) {
-    // Interactive mode with PTY — full TUI
-    // Note: --remote-control is NOT passed here because it requires
-    // claude.ai OAuth login flow. RC can be enabled later via sdk-ipc
-    // control request if needed.
+    // Interactive mode with PTY — full TUI + Remote Control
     const claudeArgs = [
+      "--remote-control",
       "--dangerously-skip-permissions",
     ];
     if (state.MODEL) claudeArgs.push("--model", state.MODEL);
