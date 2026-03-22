@@ -37,7 +37,7 @@ function connect(): void {
       await preloadWarmSession(ws);
 
       // Attach PTY relay if running in PTY mode
-      if (state.ptyMode && state.ptyProcess) {
+      if (state.ptyMode && state.ptyHandle) {
         attachPtyRelay(ws);
         ws.send(JSON.stringify({
           type: "status",

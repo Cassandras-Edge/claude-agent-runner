@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from "child_process";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readdirSync, copyFileSync } from "fs";
 import { join } from "path";
+import * as pty from "node-pty";
 import { SdkIpcSession } from "./sdk-ipc-session.js";
 import { buildClaudeChildEnv } from "./helpers.js";
 import { PATCHED_CLI_PATH } from "./config.js";
@@ -9,26 +9,20 @@ import { logger } from "./logger.js";
 import { state } from "./state.js";
 
 export interface PtyHandle {
-  process: ChildProcess;
+  pty: pty.IPty;
   session: SdkIpcSession;
   socketPath: string;
 }
 
 /**
- * Spawn Claude Code with the sdk-ipc socket for programmatic control.
- *
- * If `script` is available, spawns in interactive mode with a real PTY
- * (full TUI + Remote Control + sdk-ipc). Otherwise, spawns in print mode
- * (headless + Remote Control via control request + sdk-ipc).
- *
- * Both modes get the sdk-ipc socket since the patch is module-level.
+ * Spawn Claude Code in interactive mode with a real PTY via node-pty.
+ * Supports native resize, full TUI rendering, and the sdk-ipc socket.
  */
 export async function spawnWithPty(): Promise<PtyHandle> {
   const sdkSocketPath = `/tmp/claude-sdk-ipc-${state.SESSION_ID || randomUUID()}.sock`;
   const memSocketPath = state.MEM_SOCKET_PATH;
 
   const baseEnv = buildClaudeChildEnv();
-
   const childEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
     ...baseEnv,
@@ -38,150 +32,50 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     ENABLE_TOOL_SEARCH: "false",
   };
 
-  const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
   const home = childEnv.HOME || "/home/runner";
+  prepareClaudeConfig(home);
+  prepareWorkspaceTrust(home);
 
-  // Pre-create claude.json config to skip first-run wizard (theme picker, etc.)
-  const claudeJsonPath = join(home, ".claude.json");
-  if (!existsSync(claudeJsonPath)) {
-    // Try to restore from backup first
-    const backupDir = join(home, ".claude", "backups");
-    let restored = false;
-    try {
-      if (existsSync(backupDir)) {
-        const { readdirSync, copyFileSync } = require("fs");
-        const backups = readdirSync(backupDir)
-          .filter((f: string) => f.startsWith(".claude.json.backup."))
-          .sort()
-          .reverse();
-        if (backups.length > 0) {
-          copyFileSync(join(backupDir, backups[0]), claudeJsonPath);
-          restored = true;
-          logger.info("runner.pty", "claude_json_restored_from_backup", { backup: backups[0] });
-        }
-      }
-    } catch {}
-    if (!restored) {
-      // Create minimal config to skip the first-run wizard
-      writeFileSync(claudeJsonPath, JSON.stringify({
-        theme: "dark",
-        hasCompletedOnboarding: true,
-        hasSeenOnboardingTip: true,
-      }));
-      logger.info("runner.pty", "claude_json_created", { path: claudeJsonPath });
-    }
-  }
+  // Build Claude Code args for interactive mode
+  const claudeArgs = [
+    "--remote-control",
+    "--dangerously-skip-permissions",
+  ];
+  if (state.MODEL) claudeArgs.push("--model", state.MODEL);
+  if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
+  else if (state.APPEND_SYSTEM_PROMPT) claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
+  if (state.WORKSPACE) claudeArgs.push("--add-dir", state.WORKSPACE);
 
-  // Pre-accept workspace trust so Claude Code doesn't prompt in interactive mode.
-  // The trust file lives in ~/.claude/projects/<workspace-path-hash>/settings.json.
-  // Claude Code derives the path from cwd, so we write it for /workspace.
-  const workspacePath = state.WORKSPACE || "/workspace";
-  const projectDir = join(home, ".claude", "projects", `-${workspacePath.replace(/\//g, "-").replace(/^-/, "")}`);
-  try {
-    mkdirSync(projectDir, { recursive: true });
-    const trustFile = join(projectDir, "settings.json");
-    if (!existsSync(trustFile)) {
-      writeFileSync(trustFile, JSON.stringify({ isTrusted: true }));
-      logger.info("runner.pty", "workspace_trust_preaccepted", { path: trustFile });
-    }
-  } catch (err) {
-    logger.warn("runner.pty", "workspace_trust_write_failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
-  // Run a quick --print to accept workspace trust before launching interactive mode.
-  // --print skips the trust dialog and creates the trust state on disk.
   const executable = PATCHED_CLI_PATH ? "bun" : "claude";
-  const initArgs = PATCHED_CLI_PATH
-    ? [PATCHED_CLI_PATH, "--print", ".", "--dangerously-skip-permissions"]
-    : ["--print", ".", "--dangerously-skip-permissions"];
-  try {
-    const { execFileSync } = require("child_process");
-    execFileSync(executable, initArgs, {
-      env: childEnv,
-      cwd: state.WORKSPACE || process.cwd(),
-      stdio: "pipe",
-      timeout: 60000,
-    });
-    logger.info("runner.pty", "trust_init_complete");
-  } catch (err) {
-    logger.warn("runner.pty", "trust_init_failed", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const execArgs = PATCHED_CLI_PATH
+    ? [PATCHED_CLI_PATH, ...claudeArgs]
+    : claudeArgs;
 
-  let spawnCmd: string;
-  let spawnArgs: string[];
-
-  if (hasScript) {
-    // Interactive mode with PTY — full TUI + Remote Control
-    const claudeArgs = [
-      "--remote-control",
-      "--dangerously-skip-permissions",
-    ];
-    if (state.MODEL) claudeArgs.push("--model", state.MODEL);
-    if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
-    else if (state.APPEND_SYSTEM_PROMPT) claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
-    if (state.WORKSPACE) claudeArgs.push("--add-dir", state.WORKSPACE);
-
-    const execArgs = PATCHED_CLI_PATH ? [PATCHED_CLI_PATH, ...claudeArgs] : claudeArgs;
-
-    if (process.platform === "darwin") {
-      spawnCmd = "script";
-      spawnArgs = ["-q", "/dev/null", executable, ...execArgs];
-    } else {
-      spawnCmd = "script";
-      const fullCmd = [executable, ...execArgs].map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-      spawnArgs = ["-qc", fullCmd, "/dev/null"];
-    }
-
-    logger.info("runner.pty", "spawning_interactive", {
-      session_id: state.SESSION_ID,
-      mode: "pty",
-      claude_args: claudeArgs,
-      sdk_socket: sdkSocketPath,
-    });
-  } else {
-    // Print mode fallback — no PTY, but sdk-ipc + RC still work
-    const claudeArgs = [
-      "--print",
-      "--input-format", "stream-json",
-      "--output-format", "stream-json",
-      "--verbose",
-      "--dangerously-skip-permissions",
-    ];
-    if (state.MODEL) claudeArgs.push("--model", state.MODEL);
-    if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
-    else if (state.APPEND_SYSTEM_PROMPT) claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
-    if (state.WORKSPACE) claudeArgs.push("--add-dir", state.WORKSPACE);
-
-    spawnCmd = executable;
-    spawnArgs = PATCHED_CLI_PATH ? [PATCHED_CLI_PATH, ...claudeArgs] : claudeArgs;
-
-    logger.info("runner.pty", "spawning_headless", {
-      session_id: state.SESSION_ID,
-      mode: "print",
-      reason: "script_not_available",
-      sdk_socket: sdkSocketPath,
-    });
-  }
-
-  const child = spawn(spawnCmd, spawnArgs, {
-    env: childEnv,
-    cwd: state.WORKSPACE || process.cwd(),
-    stdio: ["pipe", "pipe", "pipe"],
+  logger.info("runner.pty", "spawning_interactive", {
+    session_id: state.SESSION_ID,
+    mode: "node-pty",
+    claude_args: claudeArgs,
+    sdk_socket: sdkSocketPath,
   });
 
-  child.on("exit", (code, signal) => {
+  const ptyProcess = pty.spawn(executable, execArgs, {
+    name: "xterm-256color",
+    cols: 120,
+    rows: 40,
+    cwd: state.WORKSPACE || process.cwd(),
+    env: childEnv,
+  });
+
+  ptyProcess.onExit(({ exitCode, signal }) => {
     logger.info("runner.pty", "process_exited", {
       session_id: state.SESSION_ID,
-      exit_code: code,
+      exit_code: exitCode,
       signal,
     });
   });
 
-  state.ptyProcess = child;
+  // Store handle on state for PTY relay
+  state.ptyHandle = ptyProcess;
   state.ptySocketPath = sdkSocketPath;
 
   // Connect to sdk-ipc socket
@@ -193,5 +87,48 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     sdk_session_id: session.sessionId,
   });
 
-  return { process: child, session, socketPath: sdkSocketPath };
+  return { pty: ptyProcess, session, socketPath: sdkSocketPath };
+}
+
+/** Pre-create .claude.json to skip onboarding wizard. */
+function prepareClaudeConfig(home: string): void {
+  const claudeJsonPath = join(home, ".claude.json");
+  if (existsSync(claudeJsonPath)) return;
+
+  // Try restore from backup
+  const backupDir = join(home, ".claude", "backups");
+  try {
+    if (existsSync(backupDir)) {
+      const backups = readdirSync(backupDir)
+        .filter(f => f.startsWith(".claude.json.backup."))
+        .sort()
+        .reverse();
+      if (backups.length > 0) {
+        copyFileSync(join(backupDir, backups[0]), claudeJsonPath);
+        logger.info("runner.pty", "claude_json_restored", { backup: backups[0] });
+        return;
+      }
+    }
+  } catch {}
+
+  writeFileSync(claudeJsonPath, JSON.stringify({
+    theme: "dark",
+    hasCompletedOnboarding: true,
+    hasSeenOnboardingTip: true,
+  }));
+  logger.info("runner.pty", "claude_json_created");
+}
+
+/** Pre-write workspace trust settings. */
+function prepareWorkspaceTrust(home: string): void {
+  const workspacePath = state.WORKSPACE || "/workspace";
+  const projectDir = join(home, ".claude", "projects", `-${workspacePath.replace(/\//g, "-").replace(/^-/, "")}`);
+  try {
+    mkdirSync(projectDir, { recursive: true });
+    const trustFile = join(projectDir, "settings.json");
+    if (!existsSync(trustFile)) {
+      writeFileSync(trustFile, JSON.stringify({ isTrusted: true }));
+      logger.info("runner.pty", "workspace_trust_preaccepted");
+    }
+  } catch {}
 }

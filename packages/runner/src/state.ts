@@ -1,5 +1,5 @@
 import type { SDKSession } from "@anthropic-ai/claude-agent-sdk";
-import type { ChildProcess } from "child_process";
+import type { IPty } from "node-pty";
 import type { DrainResult } from "./background-drainer.js";
 import type { MemIpcClient } from "./mem-ipc.js";
 import type { SdkIpcSession } from "./sdk-ipc-session.js";
@@ -38,7 +38,7 @@ export const state = {
 
   // PTY mode (inverted architecture)
   ptyMode: false,
-  ptyProcess: null as ChildProcess | null,
+  ptyHandle: null as IPty | null,
   ptySocketPath: undefined as string | undefined,
   rcSessionUrl: undefined as string | undefined,
   setupCompleted: false,
