@@ -67,7 +67,7 @@ Built on the [Claude Agent SDK](https://docs.anthropic.com/en/docs/claude-code/s
 ### Docker (simple)
 
 ```bash
-git clone https://github.com/DigiBugCat/claude-agent-runner.git
+git clone https://github.com/Cassandras-Edge/claude-agent-runner.git
 cd claude-agent-runner
 npm install
 
