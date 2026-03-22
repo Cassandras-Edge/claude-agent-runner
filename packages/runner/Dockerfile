@@ -17,6 +17,9 @@ RUN bun run scripts/patch-all.js --js-only
 
 FROM node:22-alpine AS builder
 
+# node-pty requires native compilation
+RUN apk add --no-cache python3 make g++
+
 WORKDIR /app
 
 # Copy root workspace config and shared package
