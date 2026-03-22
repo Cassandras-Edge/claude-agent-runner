@@ -38,14 +38,7 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     ENABLE_TOOL_SEARCH: "false",
   };
 
-  // In interactive mode, remove CLAUDE_CODE_OAUTH_TOKEN so Claude Code
-  // uses its stored credentials from ~/.claude/.credentials.json instead.
-  // The env var is for SDK/headless mode only — in interactive mode it
-  // can confuse the auth flow and cause login prompts.
   const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
-  if (hasScript) {
-    delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
-  }
 
   // Pre-accept workspace trust so Claude Code doesn't prompt in interactive mode.
   // The trust file lives in ~/.claude/projects/<workspace-path-hash>/settings.json.
@@ -72,9 +65,11 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   let spawnArgs: string[];
 
   if (hasScript) {
-    // Interactive mode with PTY — full TUI, RC via CLI flag
+    // Interactive mode with PTY — full TUI
+    // Note: --remote-control is NOT passed here because it requires
+    // claude.ai OAuth login flow. RC can be enabled later via sdk-ipc
+    // control request if needed.
     const claudeArgs = [
-      "--remote-control",
       "--dangerously-skip-permissions",
     ];
     if (state.MODEL) claudeArgs.push("--model", state.MODEL);
