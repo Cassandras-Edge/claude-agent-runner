@@ -49,13 +49,18 @@ export function buildZeroEventError(
 
 export function buildClaudeChildEnv(forceCompact = false): Record<string, string> {
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  if (!oauthToken) {
+  // In PTY mode, default to interactive login (no token) unless CLAUDE_PTY_USE_POOL_TOKEN=true
+  const usePoolToken = state.ptyMode
+    ? process.env.CLAUDE_PTY_USE_POOL_TOKEN === "true"
+    : true;
+
+  if (!oauthToken && !state.ptyMode) {
     logger.error("runner.config", "missing_oauth_token", { session_id: state.SESSION_ID });
-    throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process");
+    throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process (non-PTY mode)");
   }
 
   return {
-    CLAUDE_CODE_OAUTH_TOKEN: oauthToken,
+    ...(oauthToken && usePoolToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
     PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     HOME: "/home/runner",
     USER: "runner",
