@@ -127,7 +127,7 @@ function prepareWorkspaceTrust(home: string): void {
     mkdirSync(projectDir, { recursive: true });
     const trustFile = join(projectDir, "settings.json");
     if (!existsSync(trustFile)) {
-      writeFileSync(trustFile, JSON.stringify({ isTrusted: true }));
+      writeFileSync(trustFile, JSON.stringify({ hasTrustDialogAccepted: true }));
       logger.info("runner.pty", "workspace_trust_preaccepted");
     }
   } catch {}
