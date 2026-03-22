@@ -32,6 +32,11 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     ENABLE_TOOL_SEARCH: "false",
   };
 
+  // In PTY login mode, remove pool token so Claude Code prompts for login
+  if (!baseEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+    delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  }
+
   const home = childEnv.HOME || "/home/runner";
   prepareClaudeConfig(home);
   prepareWorkspaceTrust(home);
