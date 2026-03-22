@@ -39,6 +39,7 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   };
 
   const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
+  const home = childEnv.HOME || "/home/runner";
 
   // Pre-create claude.json config to skip first-run wizard (theme picker, etc.)
   const claudeJsonPath = join(home, ".claude.json");
@@ -74,7 +75,6 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   // Pre-accept workspace trust so Claude Code doesn't prompt in interactive mode.
   // The trust file lives in ~/.claude/projects/<workspace-path-hash>/settings.json.
   // Claude Code derives the path from cwd, so we write it for /workspace.
-  const home = childEnv.HOME || "/home/runner";
   const workspacePath = state.WORKSPACE || "/workspace";
   const projectDir = join(home, ".claude", "projects", `-${workspacePath.replace(/\//g, "-").replace(/^-/, "")}`);
   try {
