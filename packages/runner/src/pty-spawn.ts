@@ -105,16 +105,30 @@ function prepareClaudeConfig(home: string): void {
         .reverse();
       if (backups.length > 0) {
         copyFileSync(join(backupDir, backups[0]), claudeJsonPath);
+        // Ensure trust is set in restored config
+        try {
+          const restored = JSON.parse(require("fs").readFileSync(claudeJsonPath, "utf8"));
+          const wp = state.WORKSPACE || "/workspace";
+          restored.hasCompletedOnboarding = true;
+          restored.projects = restored.projects || {};
+          restored.projects[wp] = restored.projects[wp] || {};
+          restored.projects[wp].hasTrustDialogAccepted = true;
+          writeFileSync(claudeJsonPath, JSON.stringify(restored));
+        } catch {}
         logger.info("runner.pty", "claude_json_restored", { backup: backups[0] });
         return;
       }
     }
   } catch {}
 
+  const workspacePath = state.WORKSPACE || "/workspace";
   writeFileSync(claudeJsonPath, JSON.stringify({
     theme: "dark",
     hasCompletedOnboarding: true,
     hasSeenOnboardingTip: true,
+    projects: {
+      [workspacePath]: { hasTrustDialogAccepted: true },
+    },
   }));
   logger.info("runner.pty", "claude_json_created");
 }
