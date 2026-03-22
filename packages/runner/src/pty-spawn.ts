@@ -27,14 +27,25 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   const sdkSocketPath = `/tmp/claude-sdk-ipc-${state.SESSION_ID || randomUUID()}.sock`;
   const memSocketPath = state.MEM_SOCKET_PATH;
 
+  const baseEnv = buildClaudeChildEnv();
+
   const childEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
-    ...buildClaudeChildEnv(),
+    ...baseEnv,
     TERM: "xterm-256color",
     CLAUDE_SDK_IPC_SOCKET: sdkSocketPath,
     CLAUDE_MEM_SOCKET: memSocketPath,
     ENABLE_TOOL_SEARCH: "false",
   };
+
+  // In interactive mode, remove CLAUDE_CODE_OAUTH_TOKEN so Claude Code
+  // uses its stored credentials from ~/.claude/.credentials.json instead.
+  // The env var is for SDK/headless mode only — in interactive mode it
+  // can confuse the auth flow and cause login prompts.
+  const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
+  if (hasScript) {
+    delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
+  }
 
   // Pre-accept workspace trust so Claude Code doesn't prompt in interactive mode.
   // The trust file lives in ~/.claude/projects/<workspace-path-hash>/settings.json.
@@ -56,7 +67,6 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   }
 
   const executable = PATCHED_CLI_PATH ? "bun" : "claude";
-  const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
 
   let spawnCmd: string;
   let spawnArgs: string[];

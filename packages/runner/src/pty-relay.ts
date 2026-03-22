@@ -1,4 +1,5 @@
 import WebSocket from "ws";
+import { execFileSync } from "child_process";
 import { logger } from "./logger.js";
 import { state } from "./state.js";
 
@@ -54,23 +55,41 @@ export function attachPtyRelay(ws: WebSocket): void {
 
 /**
  * Handle inbound PTY data from the orchestrator (keystrokes + resize).
- * Called from the WS message handler when type === "pty_input".
+ * Called from the WS message handler when type === "pty_input" or "pty_resize".
  */
 export function handlePtyInput(msg: { data?: string; type?: string; cols?: number; rows?: number }): void {
   const proc = state.ptyProcess;
   if (!proc || !proc.stdin) return;
 
-  // Resize event — send xterm resize escape sequence to the PTY,
-  // then SIGWINCH the process group so the TUI re-renders.
+  // Resize event — find the PTY device and use stty to resize it,
+  // then SIGWINCH the process so the TUI re-renders.
   if (msg.type === "pty_resize" && msg.cols && msg.rows) {
-    // Send xterm resize sequence
-    proc.stdin!.write(`\x1b[8;${msg.rows};${msg.cols}t`);
-    // SIGWINCH the process group
     const pid = proc.pid;
     if (pid) {
-      try { process.kill(-pid, "SIGWINCH"); } catch {}
+      try {
+        // Find the child's PTY device (e.g. /dev/pts/0)
+        const ptyDev = findChildPty(pid);
+        if (ptyDev) {
+          execFileSync("stty", ["cols", String(msg.cols), "rows", String(msg.rows)], {
+            stdio: ["pipe", "pipe", "pipe"],
+            // Redirect stdin from the PTY device
+            input: "",
+            env: { ...process.env, TERM: "xterm-256color" },
+          });
+          // Actually need to run stty with the PTY as stdin — use sh -c
+          execFileSync("sh", ["-c", `stty cols ${msg.cols} rows ${msg.rows} < ${ptyDev}`], {
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        }
+        // SIGWINCH the process group so the TUI re-renders
+        process.kill(-pid, "SIGWINCH");
+      } catch (err) {
+        // Silently ignore — resize is best-effort
+        logger.debug("runner.pty-relay", "resize_failed", {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
-    logger.debug("runner.pty-relay", "resize", { cols: msg.cols, rows: msg.rows });
     return;
   }
 
@@ -79,4 +98,25 @@ export function handlePtyInput(msg: { data?: string; type?: string; cols?: numbe
     const raw = Buffer.from(msg.data, "base64");
     proc.stdin.write(raw);
   }
+}
+
+/**
+ * Find the PTY device used by a child process.
+ * Reads /proc/<pid>/fd/0 symlink to find the PTY (e.g. /dev/pts/0).
+ */
+function findChildPty(parentPid: number): string | null {
+  try {
+    const { readdirSync, readlinkSync } = require("fs");
+    // Find child processes (the bun process inside script)
+    const pids = readdirSync("/proc").filter((f: string) => /^\d+$/.test(f));
+    for (const childPid of pids) {
+      try {
+        const link = readlinkSync(`/proc/${childPid}/fd/0`);
+        if (link.startsWith("/dev/pts/")) {
+          return link;
+        }
+      } catch {}
+    }
+  } catch {}
+  return null;
 }
