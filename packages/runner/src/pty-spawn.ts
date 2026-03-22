@@ -33,6 +33,7 @@ export async function spawnWithPty(): Promise<PtyHandle> {
   };
 
   const home = childEnv.HOME || "/home/runner";
+  mkdirSync(join(home, ".claude"), { recursive: true });
   prepareClaudeConfig(home);
   prepareWorkspaceTrust(home);
 

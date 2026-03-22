@@ -54,10 +54,13 @@ export function buildClaudeChildEnv(forceCompact = false): Record<string, string
     throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process (non-PTY mode)");
   }
 
+  const tenantId = process.env.RUNNER_TENANT_ID;
+  const home = tenantId ? `/home/runner/tenants/${tenantId}` : "/home/runner";
+
   return {
     ...(oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken } : {}),
     PATH: process.env.PATH || "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-    HOME: "/home/runner",
+    HOME: home,
     USER: "runner",
     SHELL: "/bin/bash",
     LANG: "C.UTF-8",
@@ -75,5 +78,7 @@ export function buildClaudeChildEnv(forceCompact = false): Record<string, string
 
 export function getJsonlPath(): string {
   if (!state.sdkSessionId) throw new Error("SDK session ID not yet established");
-  return `/home/runner/.claude/projects/-workspace/${state.sdkSessionId}.jsonl`;
+  const tenantId = process.env.RUNNER_TENANT_ID;
+  const home = tenantId ? `/home/runner/tenants/${tenantId}` : "/home/runner";
+  return `${home}/.claude/projects/-workspace/${state.sdkSessionId}.jsonl`;
 }

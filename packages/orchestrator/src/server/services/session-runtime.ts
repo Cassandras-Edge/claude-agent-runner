@@ -218,6 +218,9 @@ export async function spawnSession(
     tokenIndex = assigned.tokenIndex;
     sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: assigned.token };
   }
+  if (tenantId) {
+    sessionEnv.RUNNER_TENANT_ID = tenantId;
+  }
   const credentialsEnv = await resolveCredentials(ctx, tenantId, body.vault);
   let containerId: string | undefined;
 
