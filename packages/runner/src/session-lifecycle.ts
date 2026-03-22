@@ -97,9 +97,9 @@ export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSe
 export async function createOrResumeSession(ws?: WebSocket): Promise<SDKSession | import("./sdk-ipc-session.js").SdkIpcSession> {
   // PTY mode: spawn Claude Code with a real PTY + connect via sdk-ipc socket
   if (process.env.CLAUDE_PTY_MODE === "true") {
+    state.ptyMode = true;
     const { spawnWithPty } = await import("./pty-spawn.js");
     const handle = await spawnWithPty();
-    state.ptyMode = true;
     // RC is enabled via --remote-control CLI flag in interactive mode.
     // The session URL will be visible in the TUI output.
     return handle.session;
