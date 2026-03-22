@@ -40,6 +40,37 @@ export async function spawnWithPty(): Promise<PtyHandle> {
 
   const hasScript = existsSync("/usr/bin/script") || existsSync("/usr/local/bin/script");
 
+  // Pre-create claude.json config to skip first-run wizard (theme picker, etc.)
+  const claudeJsonPath = join(home, ".claude.json");
+  if (!existsSync(claudeJsonPath)) {
+    // Try to restore from backup first
+    const backupDir = join(home, ".claude", "backups");
+    let restored = false;
+    try {
+      if (existsSync(backupDir)) {
+        const { readdirSync, copyFileSync } = require("fs");
+        const backups = readdirSync(backupDir)
+          .filter((f: string) => f.startsWith(".claude.json.backup."))
+          .sort()
+          .reverse();
+        if (backups.length > 0) {
+          copyFileSync(join(backupDir, backups[0]), claudeJsonPath);
+          restored = true;
+          logger.info("runner.pty", "claude_json_restored_from_backup", { backup: backups[0] });
+        }
+      }
+    } catch {}
+    if (!restored) {
+      // Create minimal config to skip the first-run wizard
+      writeFileSync(claudeJsonPath, JSON.stringify({
+        theme: "dark",
+        hasCompletedOnboarding: true,
+        hasSeenOnboardingTip: true,
+      }));
+      logger.info("runner.pty", "claude_json_created", { path: claudeJsonPath });
+    }
+  }
+
   // Pre-accept workspace trust so Claude Code doesn't prompt in interactive mode.
   // The trust file lives in ~/.claude/projects/<workspace-path-hash>/settings.json.
   // Claude Code derives the path from cwd, so we write it for /workspace.
