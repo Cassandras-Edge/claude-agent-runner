@@ -19,6 +19,7 @@ function createMockDocker() {
     cleanup: vi.fn().mockResolvedValue(undefined),
     ensureNetwork: vi.fn().mockResolvedValue(undefined),
     getContainerId: vi.fn().mockReturnValue("container-id-123"),
+    getPodIp: vi.fn().mockResolvedValue("10.100.0.8"),
     rekeySession: vi.fn().mockReturnValue(true),
   };
 }

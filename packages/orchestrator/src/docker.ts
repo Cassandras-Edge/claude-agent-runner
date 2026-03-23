@@ -57,6 +57,8 @@ export interface ContainerManager {
   }>;
   rekeySession(oldId: string, newId: string): boolean;
   getContainerId(sessionId: string): string | undefined;
+  /** Get the pod/container IP for a session. Returns undefined if unavailable. */
+  getPodIp(sessionId: string): Promise<string | undefined>;
   /** Ensure networking prerequisites. No-op for k8s. */
   ensureNetwork(name: string): Promise<void>;
 }
@@ -298,5 +300,10 @@ export class DockerManager implements ContainerManager {
 
   getContainerId(sessionId: string): string | undefined {
     return this.containers.get(sessionId);
+  }
+
+  async getPodIp(_sessionId: string): Promise<string | undefined> {
+    // Docker mode uses container networking, not direct pod IPs
+    return undefined;
   }
 }

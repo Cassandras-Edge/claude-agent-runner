@@ -122,6 +122,21 @@ export class K8sManager implements ContainerManager {
     const volumeMounts: k8s.V1VolumeMount[] = [];
     const volumes: k8s.V1Volume[] = [];
 
+    // SSH authorized_keys for cass attach (mounted from k8s Secret)
+    volumes.push({
+      name: "ssh-keys",
+      secret: {
+        secretName: "runner-ssh-authorized-keys",
+        defaultMode: 0o600,
+      },
+    });
+    volumeMounts.push({
+      name: "ssh-keys",
+      mountPath: "/home/runner/.ssh/authorized_keys",
+      subPath: "authorized_keys",
+      readOnly: true,
+    });
+
     // Vault: shared PVC (pre-provisioned by Helm, kept fresh by vault-sync daemon).
     if (config.vault) {
       const sanitizedVault = config.vault.replace(/[^a-z0-9]/gi, "-").toLowerCase();
@@ -162,6 +177,9 @@ export class K8sManager implements ContainerManager {
           [LABEL_MANAGED]: "true",
           [LABEL_SESSION_ID]: config.sessionId,
           [LABEL_ROLE]: "session",
+        },
+        annotations: {
+          "ipam.cilium.io/ip-pool": "runner-pool",
         },
       },
       spec: {
@@ -359,6 +377,18 @@ export class K8sManager implements ContainerManager {
 
   getContainerId(sessionId: string): string | undefined {
     return this.pods.get(sessionId);
+  }
+
+  async getPodIp(sessionId: string): Promise<string | undefined> {
+    const podName = this.pods.get(sessionId);
+    if (!podName) return undefined;
+    const ns = this.podNamespaces.get(sessionId) || this.namespace;
+    try {
+      const pod = await this.coreApi.readNamespacedPod({ name: podName, namespace: ns });
+      return pod.status?.podIP || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async ensurePvc(name: string, namespace: string, role: string): Promise<void> {

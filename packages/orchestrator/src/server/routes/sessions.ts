@@ -20,9 +20,10 @@ import {
 } from "../services/session-runtime.js";
 
 export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
-  app.get("/sessions", (c) => {
+  app.get("/sessions", async (c) => {
     const tenant = getTenant(ctx, c);
-    const sessions = ctx.sessions.list(tenant?.id).map((session) => ({
+    const sessions = ctx.sessions.list(tenant?.id);
+    const results = await Promise.all(sessions.map(async (session) => ({
       session_id: session.id,
       name: session.name,
       pinned: session.pinned,
@@ -30,15 +31,16 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       status: session.status,
       source: getSessionSource(session),
       model: session.model,
+      pod_ip: await ctx.docker.getPodIp(session.id),
       created_at: session.createdAt.toISOString(),
       last_activity: session.lastActivity.toISOString(),
       message_count: session.messageCount,
-    }));
-    logger.debug("orchestrator.api", "list_sessions", { count: sessions.length });
-    return c.json({ sessions });
+    })));
+    logger.debug("orchestrator.api", "list_sessions", { count: results.length });
+    return c.json({ sessions: results });
   });
 
-  app.get("/sessions/:id", (c) => {
+  app.get("/sessions/:id", async (c) => {
     const session = ctx.sessions.get(c.req.param("id"));
     if (!session) {
       logger.warn("orchestrator.api", "session_not_found", { session_id: c.req.param("id") });
@@ -54,6 +56,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       status: session.status,
       source: getSessionSource(session),
       model: session.model,
+      pod_ip: await ctx.docker.getPodIp(session.id),
       created_at: session.createdAt.toISOString(),
       last_activity: session.lastActivity.toISOString(),
       message_count: session.messageCount,
@@ -412,7 +415,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
       logger.info("orchestrator.api", "session_ready", { session_id: sessionId, request_id: requestId });
 
       if (!body.message) {
-        return c.json({ session_id: sessionId, status: "ready" });
+        return c.json({ session_id: sessionId, status: "ready", pod_ip: await ctx.docker.getPodIp(sessionId) });
       }
 
       logger.debug("orchestrator.api", "create_session_message_present", {
@@ -430,6 +433,7 @@ export function registerSessionRoutes(app: Hono, ctx: AppContext): void {
 
       return c.json({
         session_id: sessionId,
+        pod_ip: await ctx.docker.getPodIp(sessionId),
         result: result.text,
         usage: result.usage,
       });

@@ -39,8 +39,8 @@ RUN npm run build --workspace=packages/runner
 
 FROM node:22-alpine
 
-# Install git, common tools, and build deps for node-pty
-RUN apk add --no-cache git curl bash openssh-client python3 make g++
+# Install git, common tools, build deps for node-pty, and SSH/tmux for cass attach
+RUN apk add --no-cache git curl bash openssh-client openssh-server tmux xclip python3 make g++
 
 # Install Claude Code CLI globally (required by agent SDK)
 RUN npm install -g @anthropic-ai/claude-code@2.1.81 && npm cache clean --force
@@ -101,5 +101,22 @@ RUN mkdir -p /etc/claude-code && echo '{}' > /etc/claude-code/managed-settings.j
 # Set patched CLI path for the runner
 ENV CLAUDE_PATCHED_CLI=/opt/claude/cli-patched.js
 
-USER runner
-CMD ["node", "packages/runner/dist/index.js"]
+# SSH server setup: host keys + runner user login shell
+RUN ssh-keygen -A && \
+    mkdir -p /home/runner/.ssh && \
+    chown runner:node /home/runner/.ssh && \
+    chmod 700 /home/runner/.ssh && \
+    passwd -u runner 2>/dev/null || true && \
+    sed -i 's/^runner:.*/runner:x:100:1000:Linux User,,,:\/home\/runner:\/bin\/bash/' /etc/passwd
+
+# Authorized keys are injected at runtime via k8s Secret mount at /home/runner/.ssh/authorized_keys
+# SSH config: allow pubkey auth, disable password auth
+RUN echo -e "PermitRootLogin no\nPasswordAuthentication no\nPubkeyAuthentication yes\nAllowUsers runner" \
+    >> /etc/ssh/sshd_config
+
+# Entrypoint script
+COPY packages/runner/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Entrypoint runs as root (for sshd), then drops to runner user
+ENTRYPOINT ["/entrypoint.sh"]
