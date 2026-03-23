@@ -40,7 +40,7 @@ RUN npm run build --workspace=packages/runner
 FROM node:22-alpine
 
 # Install git, common tools, build deps for node-pty, and SSH/tmux for cass attach
-RUN apk add --no-cache git curl bash openssh-client openssh-server tmux xclip python3 make g++
+RUN apk add --no-cache git curl bash openssh-client openssh-server tmux xclip python3 make g++ sudo
 
 # Install Claude Code CLI globally (required by agent SDK)
 RUN npm install -g @anthropic-ai/claude-code@2.1.81 && npm cache clean --force
@@ -114,9 +114,12 @@ RUN ssh-keygen -A && \
 RUN echo -e "PermitRootLogin no\nPasswordAuthentication no\nPubkeyAuthentication yes\nAllowUsers runner" \
     >> /etc/ssh/sshd_config
 
+# Passwordless sudo for runner (needed for sshd startup and key setup)
+RUN echo "runner ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers.d/runner
+
 # Entrypoint script
 COPY packages/runner/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Entrypoint runs as root (for sshd), then drops to runner user
+USER runner
 ENTRYPOINT ["/entrypoint.sh"]
