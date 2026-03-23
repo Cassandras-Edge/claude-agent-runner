@@ -29,7 +29,7 @@ steps:
         --frontend dockerfile.v0
         --local context=.
         --local dockerfile=packages/orchestrator
-        --output type=image,name=172.20.0.161:30500/claude-agent-runner/orchestrator:latest,push=true,registry.insecure=true
+        --output type=image,name=registry.infra.svc.cluster.local:5000/claude-agent-runner/orchestrator:latest,push=true,registry.insecure=true
 
   - name: build-runner
     image: moby/buildkit:v0.21.1
@@ -47,4 +47,4 @@ steps:
         --local context=.
         --local dockerfile=packages/runner
         --opt build-arg:CLAUDE_CODE_VERSION=2.1.81
-        --output type=image,name=172.20.0.161:30500/claude-agent-runner/runner:latest,push=true,registry.insecure=true
+        --output type=image,name=registry.infra.svc.cluster.local:5000/claude-agent-runner/runner:latest,push=true,registry.insecure=true
