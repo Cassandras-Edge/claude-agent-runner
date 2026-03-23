@@ -1,8 +1,12 @@
 #!/bin/bash
 set -e
 
-# Fix authorized_keys ownership (secret mount comes in as root)
-chown runner:node /home/runner/.ssh/authorized_keys 2>/dev/null || true
+# Copy authorized_keys from read-only secret mount to runner's .ssh dir
+if [ -f /etc/ssh/cass-authorized-keys ]; then
+  cp /etc/ssh/cass-authorized-keys /home/runner/.ssh/authorized_keys
+  chown runner:node /home/runner/.ssh/authorized_keys
+  chmod 600 /home/runner/.ssh/authorized_keys
+fi
 
 # Start SSH server on port 22 (requires root)
 /usr/sbin/sshd -e

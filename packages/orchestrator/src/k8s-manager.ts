@@ -132,7 +132,7 @@ export class K8sManager implements ContainerManager {
     });
     volumeMounts.push({
       name: "ssh-keys",
-      mountPath: "/home/runner/.ssh/authorized_keys",
+      mountPath: "/etc/ssh/cass-authorized-keys",
       subPath: "authorized_keys",
       readOnly: true,
     });
