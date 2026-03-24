@@ -14,11 +14,11 @@ sudo /usr/sbin/sshd -e
 # Ensure workspace exists
 mkdir -p "${RUNNER_WORKSPACE:-/workspace}"
 
-# tmux config for proper Unicode rendering
+# tmux config for proper Unicode rendering + passthrough
 cat > ~/.tmux.conf << 'TMUXCONF'
 set -g default-terminal "xterm-256color"
 set -ga terminal-overrides ",xterm-256color:Tc"
-set -gq utf8 on
+set -g allow-passthrough on
 set -gq mouse on
 TMUXCONF
 
