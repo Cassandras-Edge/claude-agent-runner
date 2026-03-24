@@ -20,7 +20,8 @@ RUNNER_PID=$!
 sleep 2
 
 # Start Claude Code in a tmux session for cass attach
-tmux new-session -d -s claude -x 200 -y 50
+# No fixed size — tmux adapts to the attaching client's terminal size
+tmux new-session -d -s claude
 tmux send-keys -t claude "claude --model ${RUNNER_MODEL:-opus}" Enter
 
 # Wait for the runner process — if it exits, the pod stops
