@@ -40,7 +40,8 @@ RUN npm run build --workspace=packages/runner
 FROM node:22-alpine
 
 # Install git, common tools, build deps for node-pty, and SSH/tmux for cass attach
-RUN apk add --no-cache git curl bash openssh-client openssh-server tmux xclip python3 make g++ sudo
+RUN apk add --no-cache git curl bash openssh-client openssh-server tmux xclip python3 make g++ sudo musl-locales
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 # Install Claude Code CLI globally (required by agent SDK)
 RUN npm install -g @anthropic-ai/claude-code@2.1.81 && npm cache clean --force
