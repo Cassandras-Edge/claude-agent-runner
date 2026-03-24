@@ -381,20 +381,21 @@ export class K8sManager implements ContainerManager {
 
   async getPodIp(sessionId: string): Promise<string | undefined> {
     const podName = this.pods.get(sessionId);
-    if (!podName) {
-      logger.warn("orchestrator.k8s", "getPodIp_no_pod_in_map", { session_id: sessionId, map_size: this.pods.size });
-      return undefined;
-    }
+    if (!podName) return undefined;
     const ns = this.podNamespaces.get(sessionId) || this.namespace;
-    try {
-      const pod = await this.coreApi.readNamespacedPod({ name: podName, namespace: ns });
-      const ip = pod.status?.podIP || undefined;
-      logger.debug("orchestrator.k8s", "getPodIp", { session_id: sessionId, pod_name: podName, namespace: ns, ip });
-      return ip;
-    } catch (err) {
-      logger.warn("orchestrator.k8s", "getPodIp_error", { session_id: sessionId, pod_name: podName, error: err instanceof Error ? err.message : String(err) });
-      return undefined;
+
+    // Retry a few times — Cilium IP assignment may lag behind pod creation
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const pod = await this.coreApi.readNamespacedPod({ name: podName, namespace: ns });
+        const ip = pod.status?.podIP;
+        if (ip) return ip;
+      } catch {
+        // Pod might not exist yet
+      }
+      if (attempt < 4) await new Promise(r => setTimeout(r, 500));
     }
+    return undefined;
   }
 
   private async ensurePvc(name: string, namespace: string, role: string): Promise<void> {
