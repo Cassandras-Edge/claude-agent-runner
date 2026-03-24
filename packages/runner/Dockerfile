@@ -64,6 +64,8 @@ RUN npm ci --workspace=packages/shared --workspace=packages/runner --omit=dev &&
 RUN sed -i 's/includePartialMessages:!1,forkSession/includePartialMessages:Q.includePartialMessages??!1,forkSession/' \
     node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs && \
     sed -i 's/settingSources:\[\],allowedTools/settingSources:Q.settingSources??[],allowedTools/' \
+    node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs && \
+    sed -i 's/resumeSessionAt:void 0})/resumeSessionAt:void 0,spawnClaudeCodeProcess:Q.spawnClaudeCodeProcess})/' \
     node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs
 
 COPY --from=builder /app/packages/shared/dist packages/shared/dist
