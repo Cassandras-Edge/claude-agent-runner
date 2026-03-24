@@ -14,6 +14,21 @@ sudo /usr/sbin/sshd -e
 # Ensure workspace exists
 mkdir -p "${RUNNER_WORKSPACE:-/workspace}"
 
+# Persist .claude.json on the PVC — symlink to .claude/ which is PVC-mounted
+if [ ! -L "$HOME/.claude.json" ] && [ -d "$HOME/.claude" ]; then
+  # If a real .claude.json exists on the PVC, copy it out first
+  if [ -f "$HOME/.claude/.claude.json" ] && [ ! -f "$HOME/.claude.json" ]; then
+    cp "$HOME/.claude/.claude.json" "$HOME/.claude.json"
+  fi
+  # Move existing .claude.json to PVC if it exists
+  if [ -f "$HOME/.claude.json" ]; then
+    cp "$HOME/.claude.json" "$HOME/.claude/.claude.json"
+  fi
+  # Symlink so Claude Code reads/writes to the PVC copy
+  rm -f "$HOME/.claude.json"
+  ln -s "$HOME/.claude/.claude.json" "$HOME/.claude.json"
+fi
+
 export TERM=xterm-256color
 
 # tmux config for proper Unicode rendering + passthrough
