@@ -811,9 +811,10 @@ export async function handleMessage(ws: WebSocket, msg: OrchestratorCommand): Pr
 }
 
 export async function preloadWarmSession(ws: WebSocket): Promise<void> {
-  // In PTY mode, always eagerly spawn so the PTY relay has something to relay.
-  // In SDK mode, only preload for warm pods (no repo/vault).
-  const shouldPreload = process.env.CLAUDE_PTY_MODE === "true" || (!state.REPO && !state.VAULT);
+  // Eagerly create the SDK session when TUI is attached (user expects to see it)
+  // or for warm pods (no repo/vault) so they're ready to go.
+  const hasTui = !!process.env.CLAUDE_TUI_PTY;
+  const shouldPreload = hasTui || (!state.REPO && !state.VAULT);
   if (!state.session && shouldPreload) {
     try {
       state.session = await createOrResumeSession(ws);
