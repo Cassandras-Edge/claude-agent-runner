@@ -48,3 +48,17 @@ steps:
         --local dockerfile=packages/runner
         --opt build-arg:CLAUDE_CODE_VERSION=2.1.81
         --output type=image,name=registry.infra.svc.cluster.local:5000/claude-agent-runner/runner:latest,push=true,registry.insecure=true
+
+  # ── Deploy: restart orchestrator to pick up new images ──
+
+  - name: deploy
+    image: bitnami/kubectl:latest
+    when:
+      - event: push
+        branch: main
+    depends_on:
+      - build-orchestrator
+      - build-runner
+    commands:
+      - kubectl -n production rollout restart deployment claude-orchestrator
+      - kubectl -n production rollout status deployment claude-orchestrator --timeout=120s
