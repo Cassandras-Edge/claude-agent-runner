@@ -14,6 +14,8 @@ sudo /usr/sbin/sshd -e
 # Ensure workspace exists
 mkdir -p "${RUNNER_WORKSPACE:-/workspace}"
 
+export TERM=xterm-256color
+
 # tmux config for proper Unicode rendering + passthrough
 cat > ~/.tmux.conf << 'TMUXCONF'
 set -g default-terminal "xterm-256color"
