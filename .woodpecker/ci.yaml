@@ -59,6 +59,9 @@ steps:
     depends_on:
       - build-orchestrator
       - build-runner
+    backend_options:
+      kubernetes:
+        serviceAccountName: woodpecker-deploy
     commands:
       - kubectl -n production rollout restart deployment claude-orchestrator
       - kubectl -n production rollout status deployment claude-orchestrator --timeout=120s
