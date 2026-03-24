@@ -9,6 +9,7 @@ import { buildClaudeChildEnv } from "./helpers.js";
 import { logger } from "./logger.js";
 import { MemIpcClient } from "./mem-ipc.js";
 import { state } from "./state.js";
+import { createTuiSpawn } from "./tui-spawn.js";
 
 export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSessionOptions & Record<string, any> {
   const childEnv = buildClaudeChildEnv(forceCompact);
@@ -69,6 +70,19 @@ export function buildSessionOptions(forceCompact = false, ws?: WebSocket): SDKSe
     ...(ADDITIONAL_DIRECTORIES.length > 0 ? { additionalDirectories: ADDITIONAL_DIRECTORIES } : {}),
     ...(Object.keys(state.MCP_SERVERS).length > 0 ? { mcpServers: state.MCP_SERVERS } : {}),
   };
+
+  // When CLAUDE_TUI_PTY is set, use spawnClaudeCodeProcess to run Claude Code
+  // in interactive mode inside tmux instead of stream-json mode.
+  // The SDK communicates via the sdk-ipc unix socket bridge.
+  if (process.env.CLAUDE_TUI_PTY) {
+    const { spawnClaudeCodeProcess, sdkSocketPath } = createTuiSpawn();
+    opts.spawnClaudeCodeProcess = spawnClaudeCodeProcess;
+    logger.info("runner.session", "tui_spawn_enabled", {
+      session_id: state.SESSION_ID,
+      sdk_socket: sdkSocketPath,
+      tui_pty: process.env.CLAUDE_TUI_PTY,
+    });
+  }
 
   if (!isBypass && ws) {
     opts.canUseTool = async (toolName: string, input: any, options: { signal: AbortSignal }) => {

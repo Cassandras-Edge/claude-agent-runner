@@ -1,0 +1,50 @@
+/* === CLAUDIAN PATCH: sdk-ipc — Module-level Unix socket for prompt injection === */
+/* Injected at module scope after ED() definition. Works in BOTH interactive and print modes.
+   ED() is the global prompt queue enqueue function — calling it triggers the active
+   message loop (interactive Ink or print C3$) to process the prompt. */
+if(!globalThis.__sdkIpcStarted){globalThis.__sdkIpcStarted=true;
+(function(){var _sockPath=typeof process!=="undefined"&&process.env&&process.env.CLAUDE_SDK_IPC_SOCKET;
+if(!_sockPath)return;
+var _net;try{_net=require("net")}catch(e){try{_net=require("node:net")}catch(e2){return}}
+var _fs;try{_fs=require("fs")}catch(e){try{_fs=require("node:fs")}catch(e2){return}}
+var _crypto;try{_crypto=require("crypto")}catch(e){try{_crypto=require("node:crypto")}catch(e2){}}
+try{_fs.unlinkSync(_sockPath)}catch(e){}
+globalThis.__sdkIpcClients=new Set();
+var _srv=_net.createServer(function(conn){
+globalThis.__sdkIpcClients.add(conn);
+/* Send session_init on connect */
+try{var _sid={{SESSION_FN}}();
+conn.write(JSON.stringify({type:"system",subtype:"init",session_id:_sid,uuid:(_crypto?_crypto.randomUUID():"sdk-ipc-init")})+"\n");
+}catch(e){}
+conn.on("close",function(){globalThis.__sdkIpcClients.delete(conn)});
+conn.on("error",function(){globalThis.__sdkIpcClients.delete(conn)});
+var _buf="";
+conn.on("data",function(chunk){_buf+=chunk.toString();var lines=_buf.split("\n");_buf=lines.pop()||"";
+for(var i=0;i<lines.length;i++){if(!lines[i].trim())continue;
+try{var msg=JSON.parse(lines[i]);_handleMsg(msg,conn)}
+catch(e){conn.write(JSON.stringify({type:"error",error:String(e)})+"\n")}}});
+});
+_srv.listen(_sockPath,function(){try{_fs.chmodSync(_sockPath,0o777)}catch(e){}});
+_srv.on("error",function(e){});
+function _handleMsg(msg,conn){
+/* User message — inject through ED(). Works in both interactive and print mode.
+   In interactive mode: the Ink message loop picks it up via the queue subscriber.
+   In print mode: n() picks it up via the dequeue loop. */
+if(msg.type==="user"){
+var _content=msg.message&&msg.message.content;
+var _val=_content;
+if(Array.isArray(_content)){_val=_content}
+else if(typeof _content==="string"){_val=_content}
+else if(msg.message&&typeof msg.message==="string"){_val=msg.message}
+if(!_val)return;
+ED({mode:"prompt",value:_val,uuid:msg.uuid||(_crypto?_crypto.randomUUID():"sdk-"+Date.now()),skipSlashCommands:!!msg.skipSlashCommands,priority:msg.priority||"next"});
+return;
+}
+/* Ping/health check */
+if(msg.type==="ping"){
+try{conn.write(JSON.stringify({type:"pong",session_id:{{SESSION_FN}}()})+"\n")}catch(e){}
+return;
+}
+}
+})()}
+/* === END CLAUDIAN PATCH === */
