@@ -1,0 +1,34 @@
+{
+  "id": "tui-pty",
+  "description": "Redirect Ink TUI rendering to a secondary PTY device via CLAUDE_TUI_PTY env var. Enables stream-json on stdio (SDK primary) + interactive TUI on a separate terminal (SSH secondary) from a single Claude Code process.",
+  "target": "js-only",
+  "tested_versions": ["2.1.81"],
+  "steps": [
+    {
+      "type": "extract",
+      "id": "stdin_var",
+      "scope": "global",
+      "anchor": "exitOnCtrlC",
+      "pattern": "let (\\w+)=\\w+\\(\\),(\\w+)=\\{exitOnCtrlC:\\w+\\};if\\(\\1\\)\\2\\.stdin=\\1;return \\2",
+      "store_as": "STDIN_VAR",
+      "store_group": 1
+    },
+    {
+      "type": "extract",
+      "id": "opts_var",
+      "scope": "global",
+      "anchor": "exitOnCtrlC",
+      "pattern": "let \\w+=\\w+\\(\\),(\\w+)=\\{exitOnCtrlC:\\w+\\};if\\(\\w+\\)\\1\\.stdin=\\w+;return \\1",
+      "store_as": "OPTS_VAR",
+      "store_group": 1
+    },
+    {
+      "type": "find_replace",
+      "id": "inject_tui_pty",
+      "find": "if({{STDIN_VAR}}){{OPTS_VAR}}.stdin={{STDIN_VAR}};return {{OPTS_VAR}}",
+      "replace": "if({{STDIN_VAR}}){{OPTS_VAR}}.stdin={{STDIN_VAR}};if(process.env.CLAUDE_TUI_PTY){try{var _tM=require(\"tty\"),_fM=require(\"fs\");var _pFd=_fM.openSync(process.env.CLAUDE_TUI_PTY,\"r+\");var _pO=new _tM.WriteStream(_pFd);var _pI=new _tM.ReadStream(_pFd);_pO._type=\"tty\";if(!_pO.columns)_pO.columns=120;if(!_pO.rows)_pO.rows=40;{{OPTS_VAR}}.stdout=_pO;{{OPTS_VAR}}.stdin=_pI;{{OPTS_VAR}}.stderr=_pO}catch(e){}}return {{OPTS_VAR}}",
+      "mode": "literal",
+      "expected_count": 1
+    }
+  ]
+}

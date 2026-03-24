@@ -2,7 +2,7 @@
   "id": "mcp-background",
   "description": "Add run_in_background support to all MCP tool calls using AppState.tasks",
   "target": "js-only",
-  "tested_versions": ["2.1.63", "2.1.71", "2.1.72", "2.1.74", "2.1.77"],
+  "tested_versions": ["2.1.63", "2.1.71", "2.1.72", "2.1.74", "2.1.77", "2.1.81"],
   "steps": [
     {
       "type": "extract",
@@ -65,9 +65,8 @@
     {
       "type": "extract",
       "id": "filter_fn",
-      "scope": "region",
-      "anchor": "mcpInfo:{serverName",
-      "pattern": ":\\{\\}\\}\\}\\)\\.filter\\((\\w+)\\)",
+      "scope": "global",
+      "pattern": "\\.\\.\\.[^}]*\\{\\}\\}\\}\\)\\.filter\\((\\w+)\\)\\}catch",
       "store_as": "FILTER_FN"
     },
     {
