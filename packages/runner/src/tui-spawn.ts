@@ -70,7 +70,7 @@ function spawnInteractiveInTmux(config: SpawnConfig, sdkSocketPath: string): Chi
     ? [PATCHED_CLI_PATH, ...claudeArgs]
     : claudeArgs;
 
-  // Build env for Claude Code — strip OAuth token so user logs in interactively
+  // Build env for Claude Code — no OAuth token, user logs in interactively
   const baseEnv = buildClaudeChildEnv();
   const childEnv: Record<string, string> = {
     ...env,
@@ -79,6 +79,7 @@ function spawnInteractiveInTmux(config: SpawnConfig, sdkSocketPath: string): Chi
     CLAUDE_SDK_IPC_SOCKET: sdkSocketPath,
     ENABLE_TOOL_SEARCH: "false",
   };
+  // Remove OAuth token so Claude Code prompts for interactive login
   delete childEnv.CLAUDE_CODE_OAUTH_TOKEN;
 
   // Prepare Claude config (skip onboarding, trust workspace)
