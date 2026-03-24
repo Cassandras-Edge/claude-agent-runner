@@ -129,6 +129,7 @@ describe("session-runtime services", () => {
         agentId: "agent-a",
         model: "opus",
         systemPrompt: "fork me",
+        message: "one-off query",
       });
 
       expect(result.containerId).toBe("warm-container");

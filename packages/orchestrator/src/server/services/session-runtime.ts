@@ -145,7 +145,9 @@ export async function spawnSession(
     });
   }
 
-  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length;
+  // Warm pool only when an initial message is provided (one-off query pattern).
+  // Interactive sessions (cass new, portal) don't send a message — they always get fresh pods.
+  const canUseWarmPool = ctx.warmPool && !!body.message && !body.workspace && !body.additionalDirectories?.length;
   if (canUseWarmPool) {
     const warmEntry = ctx.warmPool!.adopt(body.vault, body.agentId);
     if (warmEntry) {
