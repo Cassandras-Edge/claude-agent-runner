@@ -41,7 +41,8 @@ TMUXCONF
 
 # Create tmux session for TUI — spawnClaudeCodeProcess replaces the pane
 # with interactive Claude Code. SSH users attach via `tmux attach -t claude`.
-tmux new-session -d -s claude 'sleep infinity'
+# -u forces UTF-8 mode regardless of locale detection.
+tmux -u new-session -d -s claude 'sleep infinity'
 CLAUDE_TUI_PTY=$(tmux display-message -p -t claude '#{pane_tty}')
 export CLAUDE_TUI_PTY
 

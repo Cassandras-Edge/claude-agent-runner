@@ -40,7 +40,17 @@ RUN npm run build --workspace=packages/runner
 FROM node:22-alpine
 
 # Install git, common tools, build deps for node-pty, and SSH/tmux for cass attach
-RUN apk add --no-cache git curl bash openssh-client openssh-server tmux xclip python3 make g++ sudo musl-locales ncurses-terminfo
+# NOTE: tmux is built from source with --enable-utf8proc to fix Unicode character
+# width issues on Alpine/musl (wcwidth() returns wrong widths for block chars ▄▀█
+# used in Claude Code's mascot). Alpine's stock tmux package lacks utf8proc support.
+RUN apk add --no-cache git curl bash openssh-client openssh-server xclip python3 make g++ sudo musl-locales ncurses-terminfo \
+    libevent-dev ncurses-dev utf8proc-dev bison && \
+    wget -qO- https://github.com/tmux/tmux/releases/download/3.6a/tmux-3.6a.tar.gz | tar xz && \
+    cd tmux-3.6a && \
+    ./configure --prefix=/usr --enable-utf8proc && \
+    make -j$(nproc) && make install && \
+    cd .. && rm -rf tmux-3.6a && \
+    apk add --no-cache libevent utf8proc ncurses-libs
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 # Install Claude Code CLI globally (required by agent SDK)
