@@ -14,9 +14,16 @@ sudo /usr/sbin/sshd -e
 # Ensure workspace exists
 mkdir -p "${RUNNER_WORKSPACE:-/workspace}"
 
-# Create tmux session for TUI output — the tui-pty patch redirects Ink
-# rendering here while stream-json stays on stdin/stdout for the SDK.
-# The pane runs sleep so it doesn't compete for PTY input with Ink.
+# tmux config for proper Unicode rendering
+cat > ~/.tmux.conf << 'TMUXCONF'
+set -g default-terminal "xterm-256color"
+set -ga terminal-overrides ",xterm-256color:Tc"
+set -gq utf8 on
+set -gq mouse on
+TMUXCONF
+
+# Create tmux session for TUI — spawnClaudeCodeProcess replaces the pane
+# with interactive Claude Code. SSH users attach via `tmux attach -t claude`.
 tmux new-session -d -s claude 'sleep infinity'
 CLAUDE_TUI_PTY=$(tmux display-message -p -t claude '#{pane_tty}')
 export CLAUDE_TUI_PTY
