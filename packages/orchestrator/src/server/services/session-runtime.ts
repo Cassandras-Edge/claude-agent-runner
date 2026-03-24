@@ -145,8 +145,7 @@ export async function spawnSession(
     });
   }
 
-  const isPty = ctx.env.CLAUDE_PTY_MODE === "true";
-  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length && !isPty;
+  const canUseWarmPool = ctx.warmPool && !body.workspace && !body.additionalDirectories?.length;
   if (canUseWarmPool) {
     const warmEntry = ctx.warmPool!.adopt(body.vault, body.agentId);
     if (warmEntry) {
@@ -210,14 +209,10 @@ export async function spawnSession(
     }
   }
 
-  let tokenIndex = -1;
-  let sessionEnv = { ...ctx.env };
-  if (!isPty) {
-    if (!ctx.tokenPool) throw new Error("Token pool required for headless session");
-    const assigned = ctx.tokenPool.assign(sessionId);
-    tokenIndex = assigned.tokenIndex;
-    sessionEnv = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: assigned.token };
-  }
+  if (!ctx.tokenPool) throw new Error("Token pool required for session");
+  const assigned = ctx.tokenPool.assign(sessionId);
+  const tokenIndex = assigned.tokenIndex;
+  const sessionEnv: Record<string, string> = { ...ctx.env, CLAUDE_CODE_OAUTH_TOKEN: assigned.token };
   if (tenantId) {
     sessionEnv.RUNNER_TENANT_ID = tenantId;
   }

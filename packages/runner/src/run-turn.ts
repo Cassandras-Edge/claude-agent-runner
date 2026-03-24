@@ -313,24 +313,6 @@ export async function maybeHandleForkAndSteer(ws: WebSocket): Promise<boolean> {
   const forkReq = state.pendingForkAndSteer;
   state.pendingForkAndSteer = null;
 
-  // PTY mode: can't fork sessions (no SDK resumeSession). Fall back to steer.
-  if (state.ptyMode) {
-    logger.info("runner.ws", "fork_and_steer_downgrade_to_steer", {
-      session_id: state.SESSION_ID,
-      reason: "pty_mode",
-    });
-    state.pendingSteer = {
-      message: forkReq.message,
-      content: forkReq.content,
-      model: forkReq.model,
-      maxTurns: forkReq.maxTurns,
-      maxThinkingTokens: forkReq.maxThinkingTokens,
-      requestId: forkReq.requestId,
-      traceId: forkReq.traceId,
-    };
-    return false;
-  }
-
   logger.info("runner.ws", "fork_and_steer_executing", {
     session_id: state.SESSION_ID,
     request_id: forkReq.requestId,

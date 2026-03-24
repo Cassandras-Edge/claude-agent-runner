@@ -49,9 +49,9 @@ export function buildZeroEventError(
 
 export function buildClaudeChildEnv(forceCompact = false): Record<string, string> {
   const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  if (!oauthToken && !state.ptyMode) {
+  if (!oauthToken) {
     logger.error("runner.config", "missing_oauth_token", { session_id: state.SESSION_ID });
-    throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process (non-PTY mode)");
+    throw new Error("CLAUDE_CODE_OAUTH_TOKEN is required for Claude child process");
   }
 
   const tenantId = process.env.RUNNER_TENANT_ID;
