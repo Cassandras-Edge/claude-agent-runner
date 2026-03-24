@@ -52,14 +52,19 @@ export async function spawnWithPty(): Promise<PtyHandle> {
     ? [PATCHED_CLI_PATH, ...claudeArgs]
     : claudeArgs;
 
+  // Build the full command string for tmux
+  const claudeCmd = [executable, ...execArgs].map(a => a.includes(" ") ? `"${a}"` : a).join(" ");
+
   logger.info("runner.pty", "spawning_interactive", {
     session_id: state.SESSION_ID,
-    mode: "node-pty",
+    mode: "node-pty+tmux",
     claude_args: claudeArgs,
     sdk_socket: sdkSocketPath,
   });
 
-  const ptyProcess = pty.spawn(executable, execArgs, {
+  // Spawn Claude Code inside tmux so SSH users can also attach via `tmux attach -t claude`.
+  // node-pty owns the outer PTY (for WebSocket relay), tmux provides the shared session.
+  const ptyProcess = pty.spawn("tmux", ["new-session", "-s", "claude", "--", "bash", "-c", claudeCmd], {
     name: "xterm-256color",
     cols: 120,
     rows: 40,
