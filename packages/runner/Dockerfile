@@ -55,7 +55,7 @@ ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 # Install Ghostty terminfo so tmux can match capabilities when SSH client uses xterm-ghostty
 COPY packages/runner/xterm-ghostty.terminfo /tmp/xterm-ghostty.terminfo
-RUN tic -x /tmp/xterm-ghostty.terminfo && rm /tmp/xterm-ghostty.terminfo
+RUN apk add --no-cache ncurses && tic -x /tmp/xterm-ghostty.terminfo && rm /tmp/xterm-ghostty.terminfo
 
 # Install Claude Code CLI globally (required by agent SDK)
 RUN npm install -g @anthropic-ai/claude-code@2.1.81 && npm cache clean --force
