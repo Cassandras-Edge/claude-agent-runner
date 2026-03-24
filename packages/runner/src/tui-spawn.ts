@@ -86,8 +86,15 @@ function spawnInteractiveInTmux(config: SpawnConfig, sdkSocketPath: string): Chi
   const home = childEnv.HOME || "/home/runner";
   prepareClaudeConfig(home);
 
-  // Build the full command string for tmux
-  const claudeCmd = [executable, ...execArgs].map(a => a.includes(" ") ? `"${a}"` : a).join(" ");
+  // Build the full command string for tmux.
+  // tmux respawn-pane runs the command in the tmux server's environment (not the
+  // env we pass to spawn("tmux")), so we must explicitly set/unset env vars in
+  // the bash command itself.
+  const envPrefix = Object.entries(childEnv)
+    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+    .join(" ");
+  const unsetOauth = "unset CLAUDE_CODE_OAUTH_TOKEN;";
+  const claudeCmd = `${unsetOauth} exec env ${envPrefix} ${[executable, ...execArgs].map(a => a.includes(" ") ? `"${a}"` : a).join(" ")}`;
 
   logger.info("runner.tui-spawn", "spawning_interactive_in_tmux", {
     session_id: state.SESSION_ID,
