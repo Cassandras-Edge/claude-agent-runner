@@ -59,6 +59,7 @@ function spawnInteractiveInTmux(config: SpawnConfig, sdkSocketPath: string): Chi
   // Build interactive Claude Code args (NOT stream-json)
   const claudeArgs = [
     "--dangerously-skip-permissions",
+    "--remote-control",
   ];
   if (state.MODEL) claudeArgs.push("--model", state.MODEL);
   if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
