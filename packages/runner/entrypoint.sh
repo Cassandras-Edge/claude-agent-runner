@@ -43,6 +43,11 @@ TMUXCONF
 # with interactive Claude Code. SSH users attach via `tmux attach -t claude`.
 # -u forces UTF-8 mode regardless of locale detection.
 tmux -u new-session -d -s claude 'sleep infinity'
+
+# Remove OAuth token from tmux's session environment so respawn-pane commands
+# don't inherit it. Interactive sessions use subscription auth (Claude Max login).
+# The runner node process still has the token in its own env for SDK calls.
+tmux set-environment -t claude -r CLAUDE_CODE_OAUTH_TOKEN
 CLAUDE_TUI_PTY=$(tmux display-message -p -t claude '#{pane_tty}')
 export CLAUDE_TUI_PTY
 
