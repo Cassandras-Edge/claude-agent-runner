@@ -61,6 +61,7 @@ function spawnInteractiveInTmux(config: SpawnConfig, sdkSocketPath: string): Chi
     "--dangerously-skip-permissions",
     "--remote-control",
   ];
+  if (state.SESSION_ID) claudeArgs.push("--session-id", state.SESSION_ID);
   if (state.MODEL) claudeArgs.push("--model", state.MODEL);
   if (state.SYSTEM_PROMPT) claudeArgs.push("--system-prompt", state.SYSTEM_PROMPT);
   else if (state.APPEND_SYSTEM_PROMPT) claudeArgs.push("--append-system-prompt", state.APPEND_SYSTEM_PROMPT);
