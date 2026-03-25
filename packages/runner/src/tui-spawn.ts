@@ -87,8 +87,10 @@ function spawnInteractiveInTmux(config: SpawnConfig, sdkSocketPath: string): Chi
   const home = childEnv.HOME || "/home/runner";
   prepareClaudeConfig(home);
 
-  // Build the full command string for tmux
-  const claudeCmd = [executable, ...execArgs].map(a => a.includes(" ") ? `"${a}"` : a).join(" ");
+  // Build the full command string for tmux.
+  // tmux respawn-pane inherits the tmux server's cwd (not spawn()'s cwd),
+  // so we prepend a cd to the workspace directory.
+  const claudeCmd = `cd ${cwd} && ${[executable, ...execArgs].map(a => a.includes(" ") ? `"${a}"` : a).join(" ")}`;
 
   logger.info("runner.tui-spawn", "spawning_interactive_in_tmux", {
     session_id: state.SESSION_ID,
