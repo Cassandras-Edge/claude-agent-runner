@@ -52,7 +52,7 @@ steps:
   # ── Deploy: restart orchestrator to pick up new images ──
 
   - name: deploy
-    image: bitnami/kubectl:latest
+    image: node:22-slim
     when:
       - event: push
         branch: main
@@ -63,5 +63,9 @@ steps:
       kubernetes:
         serviceAccountName: woodpecker-deploy
     commands:
+      - >
+        apt-get update && apt-get install -y --no-install-recommends curl ca-certificates &&
+        curl -sLO "https://dl.k8s.io/release/v1.31.0/bin/linux/amd64/kubectl" &&
+        chmod +x kubectl && mv kubectl /usr/local/bin/
       - kubectl -n production rollout restart deployment claude-orchestrator
       - kubectl -n production rollout status deployment claude-orchestrator --timeout=120s
